@@ -117,10 +117,43 @@ const groupLabels: Record<string, string> = {
   ops: 'Ops / Finance',
 };
 
+const nodeIcons: Record<string, string> = {
+  'eddie': '🐱',
+  'covenant-studios': '⛪',
+  'prayer-lock': '🔒',
+  'memory': '🧠',
+  'soul': '✨',
+  'user': '👥',
+  'appstoretracker': '📊',
+  'ads': '📈',
+  'revenue': '💰',
+  'viewtrack': '👁',
+  'general-report': '📋',
+  'tweets': '🐦',
+  'ernesto-voice': '🎙',
+  'ernesto-guides': '📖',
+  'viral-hooks': '🎣',
+  'app-viral-combo': '🚀',
+  'mind-maps': '🗺',
+  'rork-app-generator': '📱',
+  'website-builder': '🌐',
+  'arcads': '🎬',
+  'supabase-integration': '🗄',
+  'larry-cinematic-v1': '🎥',
+  'ad-research': '🔍',
+  'screensdesign': '🎨',
+  'finance': '💵',
+  'reddit': '🤖',
+  'tools': '🔧',
+  'google-docs-clone': '📝',
+  'word-clone': '🟩',
+};
+
 export default function BrainGraph() {
   const svgRef = useRef<SVGSVGElement>(null);
   const [selected, setSelected] = useState<NodeDatum | null>(null);
   const [tooltip, setTooltip] = useState<{ x: number; y: number; node: NodeDatum } | null>(null);
+  const [censored, setCensored] = useState(false);
   const selectedRef = useRef<NodeDatum | null>(null);
 
   const handleNodeClick = useCallback((node: NodeDatum) => {
@@ -225,9 +258,18 @@ export default function BrainGraph() {
       .attr('stroke', 'transparent')
       .attr('stroke-width', 0);
 
+    // Node emoji icons (centered inside circle)
+    nodeGroup.append('text')
+      .text(d => nodeIcons[d.id] || '')
+      .attr('text-anchor', 'middle')
+      .attr('dominant-baseline', 'central')
+      .attr('font-size', d => `${d.size * 0.55}px`)
+      .attr('pointer-events', 'none');
+
     // Node labels
     nodeGroup.append('text')
       .text(d => d.label)
+      .attr('class', 'node-label')
       .attr('text-anchor', 'middle')
       .attr('dy', d => d.size + 14)
       .attr('fill', 'rgba(255,255,255,0.85)')
@@ -324,6 +366,14 @@ export default function BrainGraph() {
     };
   }, []);
 
+  // Update label blur when censored state changes
+  useEffect(() => {
+    if (!svgRef.current) return;
+    d3.select(svgRef.current)
+      .selectAll('.node-label')
+      .style('filter', censored ? 'blur(4px)' : 'none');
+  }, [censored]);
+
   return (
     <div className="relative w-full h-full" style={{ background: '#0a0a0f' }}>
       <svg ref={svgRef} className="w-full h-full" />
@@ -372,6 +422,17 @@ export default function BrainGraph() {
           <div className="text-xs mt-1" style={{ color: '#9ca3af' }}>{tooltip.node.desc}</div>
         </div>
       )}
+
+      {/* Censor Toggle Button */}
+      <div className="absolute top-5 right-5 z-10">
+        <button
+          onClick={() => setCensored(prev => !prev)}
+          className="bg-[#1a1a2e] border border-[#333] text-white px-4 py-2 rounded-full text-sm"
+          style={{ fontFamily: 'monospace' }}
+        >
+          {censored ? '👁 Uncensor' : '👁 Censor'}
+        </button>
+      </div>
 
       {/* Side Panel */}
       <div
