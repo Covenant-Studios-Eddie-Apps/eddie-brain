@@ -61,6 +61,10 @@ export default function Home() {
   const [loading, setLoading] = useState(true)
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null)
   const [panelVisible, setPanelVisible] = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
+  const [editContent, setEditContent] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
 
   // Graph state in refs to avoid re-renders in animation loop
   const nodesRef = useRef<Node[]>([])
@@ -158,6 +162,11 @@ export default function Home() {
 
     return { nodes, edges }
   }, [])
+
+  useEffect(() => {
+    setIsEditing(false)
+    setSaveStatus('idle')
+  }, [selectedSkill?.id])
 
   useEffect(() => {
     fetch('/api/skills')
@@ -598,6 +607,7 @@ export default function Home() {
 
   return (
     <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#080B14', position: 'relative' }}>
+      <style>{`@keyframes fadeOut { 0%,60%{opacity:1} 100%{opacity:0} }`}</style>
       <canvas ref={canvasRef} style={{ display: 'block' }} />
 
       {/* Side Panel */}
@@ -657,48 +667,179 @@ export default function Home() {
                   </div>
                 )}
               </div>
-              <button
-                onClick={() => { setPanelVisible(false); setTimeout(() => setSelectedSkill(null), 350) }}
-                style={{
-                  background: 'rgba(255,255,255,0.05)',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  color: '#94a3b8',
-                  width: 32,
-                  height: 32,
-                  borderRadius: 8,
-                  cursor: 'pointer',
-                  fontSize: 18,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0,
-                  transition: 'all 0.15s',
-                }}
-                onMouseEnter={e => { (e.target as HTMLButtonElement).style.color = '#fff'; (e.target as HTMLButtonElement).style.background = 'rgba(255,255,255,0.12)' }}
-                onMouseLeave={e => { (e.target as HTMLButtonElement).style.color = '#94a3b8'; (e.target as HTMLButtonElement).style.background = 'rgba(255,255,255,0.05)' }}
-              >
-                ×
-              </button>
+              <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
+                {!isEditing && (
+                  <button
+                    onClick={() => { setEditContent(selectedSkill.content); setIsEditing(true); setSaveStatus('idle') }}
+                    style={{
+                      background: `${getCategoryColor(selectedSkill.category)}22`,
+                      border: `1px solid ${getCategoryColor(selectedSkill.category)}44`,
+                      color: getCategoryColor(selectedSkill.category),
+                      height: 32,
+                      padding: '0 12px',
+                      borderRadius: 8,
+                      cursor: 'pointer',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 5,
+                      transition: 'all 0.15s',
+                    }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = `${getCategoryColor(selectedSkill.category)}44` }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = `${getCategoryColor(selectedSkill.category)}22` }}
+                  >
+                    ✏ Edit
+                  </button>
+                )}
+                <button
+                  onClick={() => { setIsEditing(false); setSaveStatus('idle'); setPanelVisible(false); setTimeout(() => setSelectedSkill(null), 350) }}
+                  style={{
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    color: '#94a3b8',
+                    width: 32,
+                    height: 32,
+                    borderRadius: 8,
+                    cursor: 'pointer',
+                    fontSize: 18,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    transition: 'all 0.15s',
+                  }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = '#fff'; (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.12)' }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = '#94a3b8'; (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.05)' }}
+                >
+                  ×
+                </button>
+              </div>
             </div>
-            <div style={{
-              flex: 1,
-              overflowY: 'auto',
-              padding: '20px 24px',
-              scrollbarWidth: 'thin',
-              scrollbarColor: 'rgba(99,102,241,0.3) transparent',
-            }}>
-              <pre style={{
-                fontSize: 13,
-                color: '#cbd5e1',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
-                lineHeight: 1.7,
-                margin: 0,
+            {isEditing ? (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '16px 24px', gap: 12 }}>
+                <textarea
+                  value={editContent}
+                  onChange={e => setEditContent(e.target.value)}
+                  style={{
+                    flex: 1,
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    background: '#0d1117',
+                    border: `1px solid ${getCategoryColor(selectedSkill.category)}66`,
+                    borderRadius: 8,
+                    color: '#e5e7eb',
+                    fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
+                    fontSize: 13,
+                    lineHeight: 1.7,
+                    padding: 16,
+                    resize: 'none',
+                    outline: 'none',
+                    transition: 'box-shadow 0.15s',
+                  }}
+                  onFocus={e => { e.currentTarget.style.boxShadow = `0 0 0 2px ${getCategoryColor(selectedSkill.category)}55` }}
+                  onBlur={e => { e.currentTarget.style.boxShadow = 'none' }}
+                />
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    disabled={isSaving}
+                    onClick={async () => {
+                      setIsSaving(true)
+                      setSaveStatus('idle')
+                      const updated: Skill = { ...selectedSkill, content: editContent, updated_at: new Date().toISOString() }
+                      try {
+                        const res = await fetch('/api/sync-skills', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ skills: [{ name: updated.name, description: updated.description, content: updated.content, category: updated.category, updated_at: updated.updated_at }] }),
+                        })
+                        if (!res.ok) throw new Error('failed')
+                        setSkills(prev => prev.map(s => s.id === selectedSkill.id ? updated : s))
+                        setSelectedSkill(updated)
+                        setIsEditing(false)
+                        setSaveStatus('saved')
+                        setTimeout(() => setSaveStatus('idle'), 2000)
+                      } catch {
+                        setSaveStatus('error')
+                      } finally {
+                        setIsSaving(false)
+                      }
+                    }}
+                    style={{
+                      background: getCategoryColor(selectedSkill.category),
+                      border: 'none',
+                      color: '#fff',
+                      height: 34,
+                      padding: '0 18px',
+                      borderRadius: 8,
+                      cursor: isSaving ? 'not-allowed' : 'pointer',
+                      fontSize: 13,
+                      fontWeight: 600,
+                      opacity: isSaving ? 0.7 : 1,
+                      transition: 'opacity 0.15s',
+                    }}
+                  >
+                    {isSaving ? 'Saving…' : 'Save'}
+                  </button>
+                  <button
+                    onClick={() => { setIsEditing(false); setSaveStatus('idle') }}
+                    style={{
+                      background: 'rgba(255,255,255,0.05)',
+                      border: '1px solid rgba(255,255,255,0.1)',
+                      color: '#94a3b8',
+                      height: 34,
+                      padding: '0 14px',
+                      borderRadius: 8,
+                      cursor: 'pointer',
+                      fontSize: 13,
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  {saveStatus === 'error' && (
+                    <span style={{ fontSize: 12, color: '#ef4444' }}>Error saving</span>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div style={{
+                flex: 1,
+                overflowY: 'auto',
+                padding: '20px 24px',
+                scrollbarWidth: 'thin',
+                scrollbarColor: 'rgba(99,102,241,0.3) transparent',
               }}>
-                {selectedSkill.content}
-              </pre>
-            </div>
+                {saveStatus === 'saved' && (
+                  <div style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    background: 'rgba(16,185,129,0.15)',
+                    border: '1px solid rgba(16,185,129,0.3)',
+                    color: '#10B981',
+                    borderRadius: 20,
+                    padding: '2px 10px',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    marginBottom: 12,
+                    animation: 'fadeOut 2s forwards',
+                  }}>
+                    Saved ✓
+                  </div>
+                )}
+                <pre style={{
+                  fontSize: 13,
+                  color: '#cbd5e1',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
+                  lineHeight: 1.7,
+                  margin: 0,
+                }}>
+                  {selectedSkill.content}
+                </pre>
+              </div>
+            )}
           </>
         )}
       </div>
