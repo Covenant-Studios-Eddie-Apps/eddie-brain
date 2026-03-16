@@ -18,40 +18,90 @@ interface SkillWithContent extends Skill {
   content?: string;
 }
 
+// Tree node — either a folder (has children) or a leaf (has skill data)
+interface TreeNode {
+  label: string;
+  fullPath: string;
+  isLeaf: boolean;
+  skill?: Skill;
+  children: Map<string, TreeNode>;
+}
+
 const CATEGORY_META: Record<string, { icon: string; color: string; label: string }> = {
-  voices: { icon: '🎙', color: '#a855f7', label: 'Voices' },
-  research: { icon: '🔍', color: '#14b8a6', label: 'Research' },
-  formats: { icon: '📐', color: '#60a5fa', label: 'Formats' },
-  studio: { icon: '🏗', color: '#f59e0b', label: 'Studio' },
-  ops: { icon: '⚙️', color: '#9ca3af', label: 'Ops' },
+  voices:   { icon: '🎙',  color: '#a855f7', label: 'Voices'   },
+  research: { icon: '🔬',  color: '#14b8a6', label: 'Research' },
+  formats:  { icon: '📋',  color: '#60a5fa', label: 'Formats'  },
+  studio:   { icon: '🏗',  color: '#f59e0b', label: 'Studio'   },
+  ops:      { icon: '⚙️', color: '#9ca3af', label: 'Ops'      },
 };
 
 const CATEGORY_ORDER = ['voices', 'research', 'formats', 'studio', 'ops'];
 
-// Minimal markdown → HTML transform (no deps)
+// Build a nested tree from flat skill list using path segments
+function buildTree(skills: Skill[]): Map<string, TreeNode> {
+  const roots = new Map<string, TreeNode>();
+
+  for (const skill of skills) {
+    if (!skill.path) continue;
+    const parts = skill.path.split('/').filter(Boolean);
+    if (parts.length === 0) continue;
+
+    let current = roots;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const isLast = i === parts.length - 1;
+      const fullPath = parts.slice(0, i + 1).join('/');
+
+      if (!current.has(part)) {
+        current.set(part, {
+          label: part,
+          fullPath,
+          isLeaf: false,
+          children: new Map(),
+        });
+      }
+
+      const node = current.get(part)!;
+
+      if (isLast) {
+        // Mark as leaf and attach skill data
+        node.isLeaf = true;
+        node.skill = skill;
+      }
+
+      current = node.children;
+    }
+  }
+
+  return roots;
+}
+
+// Count total leaf nodes in a subtree
+function countLeaves(node: TreeNode): number {
+  if (node.isLeaf && node.children.size === 0) return 1;
+  let count = node.isLeaf ? 1 : 0;
+  for (const child of node.children.values()) {
+    count += countLeaves(child);
+  }
+  return count;
+}
+
+// Minimal markdown → HTML transform
 function renderMarkdown(md: string): string {
   let html = md
-    // Headings
     .replace(/^### (.+)$/gm, '<h3 style="color:#e2e8f0;font-size:1rem;font-weight:700;margin:1.2em 0 0.4em 0">$1</h3>')
     .replace(/^## (.+)$/gm, '<h2 style="color:#f1f5f9;font-size:1.15rem;font-weight:700;margin:1.4em 0 0.5em 0">$1</h2>')
     .replace(/^# (.+)$/gm, '<h1 style="color:#fff;font-size:1.3rem;font-weight:800;margin:1.6em 0 0.6em 0">$1</h1>')
-    // Bold / italic
     .replace(/\*\*(.+?)\*\*/g, '<strong style="color:#f1f5f9">$1</strong>')
     .replace(/\*(.+?)\*/g, '<em style="color:#cbd5e1">$1</em>')
-    // Inline code
     .replace(/`([^`\n]+)`/g, '<code style="background:#1e293b;color:#7dd3fc;padding:1px 5px;border-radius:3px;font-size:0.87em">$1</code>')
-    // HR
     .replace(/^---$/gm, '<hr style="border:none;border-top:1px solid #1e293b;margin:1em 0"/>')
-    // Blockquote
     .replace(/^> (.+)$/gm, '<blockquote style="border-left:3px solid #4b5563;padding-left:0.75em;color:#94a3b8;margin:0.5em 0">$1</blockquote>')
-    // List items
     .replace(/^[-*•] (.+)$/gm, '<li style="margin:0.2em 0;color:#94a3b8;list-style:disc;margin-left:1.2em">$1</li>')
     .replace(/^\d+\. (.+)$/gm, '<li style="margin:0.2em 0;color:#94a3b8;list-style:decimal;margin-left:1.2em">$1</li>');
 
-  // Wrap consecutive <li> tags in <ul>/<ol>
   html = html.replace(/(<li[^>]*>.*<\/li>\n?)+/g, (block) => `<ul style="margin:0.5em 0;padding:0">${block}</ul>`);
 
-  // Paragraphs: double newlines
   html = html
     .split(/\n{2,}/)
     .map((block) => {
@@ -64,30 +114,173 @@ function renderMarkdown(md: string): string {
   return html;
 }
 
-function groupByCategory(skills: Skill[]): Record<string, Record<string, Skill[]>> {
-  const result: Record<string, Record<string, Skill[]>> = {};
-  for (const skill of skills) {
-    const cat = skill.category || 'other';
-    const parts = skill.path ? skill.path.split('/') : [];
-    const subfolder = parts.length >= 3 ? parts[1] : '__root__';
-    if (!result[cat]) result[cat] = {};
-    if (!result[cat][subfolder]) result[cat][subfolder] = [];
-    result[cat][subfolder].push(skill);
+// Recursive tree node renderer
+function TreeNodeRow({
+  node,
+  depth,
+  accentColor,
+  openPaths,
+  togglePath,
+  selectedPath,
+  onSelectLeaf,
+}: {
+  node: TreeNode;
+  depth: number;
+  accentColor: string;
+  openPaths: Set<string>;
+  togglePath: (p: string) => void;
+  selectedPath: string | null;
+  onSelectLeaf: (skill: Skill) => void;
+}) {
+  const isOpen = openPaths.has(node.fullPath);
+  const isSelected = selectedPath === node.fullPath;
+  const hasChildren = node.children.size > 0;
+  const paddingLeft = 18 + depth * 16;
+
+  // Pure leaf node (no children)
+  if (node.isLeaf && !hasChildren) {
+    return (
+      <button
+        onClick={() => node.skill && onSelectLeaf(node.skill)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 7,
+          width: '100%',
+          padding: `5px 16px 5px ${paddingLeft}px`,
+          background: isSelected ? `${accentColor}14` : 'transparent',
+          border: 'none',
+          borderLeft: isSelected ? `2px solid ${accentColor}` : '2px solid transparent',
+          cursor: 'pointer',
+          textAlign: 'left',
+          transition: 'background 0.1s',
+        }}
+        onMouseEnter={(e) => {
+          if (!isSelected) (e.currentTarget as HTMLButtonElement).style.background = 'rgba(99,102,241,0.05)';
+        }}
+        onMouseLeave={(e) => {
+          if (!isSelected) (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
+        }}
+      >
+        <span style={{ color: '#1f2937', fontSize: '0.5rem', flexShrink: 0 }}>◆</span>
+        <span
+          style={{
+            fontSize: '0.71rem',
+            color: isSelected ? accentColor : '#4b5563',
+            fontWeight: isSelected ? 600 : 400,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            transition: 'color 0.1s',
+          }}
+        >
+          {node.label}
+        </span>
+      </button>
+    );
   }
-  return result;
+
+  // Folder node (may also be a leaf if it has both children and skill data)
+  const leafCount = countLeaves(node);
+
+  return (
+    <div>
+      <button
+        onClick={() => {
+          togglePath(node.fullPath);
+          // If it's also a leaf, select it
+          if (node.isLeaf && node.skill) onSelectLeaf(node.skill);
+        }}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 7,
+          width: '100%',
+          padding: `6px 16px 6px ${paddingLeft}px`,
+          background: isSelected ? `${accentColor}10` : 'transparent',
+          border: 'none',
+          borderLeft: isSelected ? `2px solid ${accentColor}66` : '2px solid transparent',
+          cursor: 'pointer',
+          textAlign: 'left',
+          transition: 'background 0.12s',
+        }}
+        onMouseEnter={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(99,102,241,0.05)';
+        }}
+        onMouseLeave={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.background =
+            isSelected ? `${accentColor}10` : 'transparent';
+        }}
+      >
+        <span style={{ color: '#374151', fontSize: '0.58rem', flexShrink: 0, width: 10 }}>
+          {isOpen ? '▾' : '▸'}
+        </span>
+        <span style={{ fontSize: '0.58rem', flexShrink: 0 }}>{isOpen ? '📂' : '📁'}</span>
+        <span
+          style={{
+            fontSize: '0.72rem',
+            color: isOpen ? '#94a3b8' : '#4b5563',
+            fontWeight: 600,
+            flex: 1,
+            transition: 'color 0.12s',
+          }}
+        >
+          {node.label}
+        </span>
+        <span
+          style={{
+            fontSize: '0.6rem',
+            color: '#374151',
+            background: '#111827',
+            padding: '1px 5px',
+            borderRadius: 10,
+            marginRight: 4,
+            flexShrink: 0,
+          }}
+        >
+          {leafCount}
+        </span>
+      </button>
+
+      {isOpen && (
+        <div>
+          {Array.from(node.children.values())
+            .sort((a, b) => {
+              // Folders before leaves
+              const aIsFolder = a.children.size > 0;
+              const bIsFolder = b.children.size > 0;
+              if (aIsFolder && !bIsFolder) return -1;
+              if (!aIsFolder && bIsFolder) return 1;
+              return a.label.localeCompare(b.label);
+            })
+            .map((child) => (
+              <TreeNodeRow
+                key={child.fullPath}
+                node={child}
+                depth={depth + 1}
+                accentColor={accentColor}
+                openPaths={openPaths}
+                togglePath={togglePath}
+                selectedPath={selectedPath}
+                onSelectLeaf={onSelectLeaf}
+              />
+            ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function SkillTree() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [openCats, setOpenCats] = useState<Set<string>>(new Set(['voices']));
-  const [openSubs, setOpenSubs] = useState<Set<string>>(new Set());
+  const [openPaths, setOpenPaths] = useState<Set<string>>(new Set(['voices']));
   const [selectedSkill, setSelectedSkill] = useState<SkillWithContent | null>(null);
   const [contentLoading, setContentLoading] = useState(false);
 
   useEffect(() => {
-    fetch(`${SUPABASE_URL}/rest/v1/skills?select=name,path,parent,category,description`, {
+    fetch(`${SUPABASE_URL}/rest/v1/skills?select=name,path,parent,category,description&limit=500`, {
       headers: {
         apikey: SUPABASE_KEY,
         Authorization: `Bearer ${SUPABASE_KEY}`,
@@ -105,18 +298,10 @@ export default function SkillTree() {
       });
   }, []);
 
-  const toggleCat = useCallback((cat: string) => {
-    setOpenCats((prev) => {
+  const togglePath = useCallback((path: string) => {
+    setOpenPaths((prev) => {
       const next = new Set(prev);
-      next.has(cat) ? next.delete(cat) : next.add(cat);
-      return next;
-    });
-  }, []);
-
-  const toggleSub = useCallback((key: string) => {
-    setOpenSubs((prev) => {
-      const next = new Set(prev);
-      next.has(key) ? next.delete(key) : next.add(key);
+      next.has(path) ? next.delete(path) : next.add(path);
       return next;
     });
   }, []);
@@ -145,9 +330,20 @@ export default function SkillTree() {
     }
   }, []);
 
-  const grouped = groupByCategory(skills);
-  const catKeys = CATEGORY_ORDER.filter((c) => grouped[c]);
-  const otherCats = Object.keys(grouped).filter((c) => !CATEGORY_ORDER.includes(c));
+  // Build the full tree, then split into top-level category roots
+  const fullTree = buildTree(skills);
+
+  // Get category roots in order
+  const catRoots = CATEGORY_ORDER
+    .filter((c) => fullTree.has(c))
+    .map((c) => ({ key: c, node: fullTree.get(c)! }));
+
+  // Any extra categories not in the standard order
+  const extraRoots = Array.from(fullTree.entries())
+    .filter(([k]) => !CATEGORY_ORDER.includes(k))
+    .map(([k, n]) => ({ key: k, node: n }));
+
+  const allRoots = [...catRoots, ...extraRoots];
 
   return (
     <div
@@ -165,7 +361,7 @@ export default function SkillTree() {
         style={{
           width: 300,
           minWidth: 260,
-          maxWidth: 320,
+          maxWidth: 340,
           borderRight: '1px solid rgba(99,102,241,0.12)',
           display: 'flex',
           flexDirection: 'column',
@@ -197,7 +393,7 @@ export default function SkillTree() {
             eddie brain
           </div>
           <div style={{ fontSize: '0.68rem', color: '#374151', marginTop: 3 }}>
-            {loading ? 'loading...' : `${skills.length} skills`}
+            {loading ? 'loading...' : `${skills.filter(s => s.path).length} skill nodes`}
           </div>
         </div>
 
@@ -214,17 +410,16 @@ export default function SkillTree() {
             </div>
           )}
 
-          {[...catKeys, ...otherCats].map((cat) => {
-            const meta = CATEGORY_META[cat] || { icon: '📁', color: '#6b7280', label: cat };
-            const isCatOpen = openCats.has(cat);
-            const subfolders = grouped[cat];
-            const totalSkills = Object.values(subfolders).flat().length;
+          {allRoots.map(({ key, node }) => {
+            const meta = CATEGORY_META[key] || { icon: '📁', color: '#6b7280', label: key };
+            const isCatOpen = openPaths.has(key);
+            const totalLeaves = countLeaves(node);
 
             return (
-              <div key={cat}>
-                {/* ── Category row ── */}
+              <div key={key}>
+                {/* ── Top-level category row ── */}
                 <button
-                  onClick={() => toggleCat(cat)}
+                  onClick={() => togglePath(key)}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -283,106 +478,42 @@ export default function SkillTree() {
                       marginRight: 4,
                     }}
                   >
-                    {totalSkills}
+                    {totalLeaves}
                   </span>
                   <span style={{ color: '#374151', fontSize: '0.62rem' }}>
                     {isCatOpen ? '▾' : '▸'}
                   </span>
                 </button>
 
-                {/* ── Subfolders ── */}
+                {/* ── Recursive children ── */}
                 {isCatOpen &&
-                  Object.entries(subfolders).map(([sub, leaves]) => {
-                    const subKey = `${cat}/${sub}`;
-                    const isSubOpen = openSubs.has(subKey);
-                    const isRoot = sub === '__root__';
-
-                    if (isRoot) {
-                      return leaves.map((skill) => (
-                        <LeafRow
-                          key={skill.path}
-                          skill={skill}
-                          selected={selectedSkill?.path === skill.path}
-                          onSelect={selectLeaf}
-                          depth={1}
-                          accentColor={meta.color}
-                        />
-                      ));
-                    }
-
-                    return (
-                      <div key={subKey}>
-                        {/* Subfolder row */}
-                        <button
-                          onClick={() => toggleSub(subKey)}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 7,
-                            width: '100%',
-                            padding: '6px 18px 6px 38px',
-                            background: 'transparent',
-                            border: 'none',
-                            cursor: 'pointer',
-                            textAlign: 'left',
-                          }}
-                          onMouseEnter={(e) =>
-                            ((e.currentTarget as HTMLButtonElement).style.background =
-                              'rgba(99,102,241,0.05)')
-                          }
-                          onMouseLeave={(e) =>
-                            ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')
-                          }
-                        >
-                          <span style={{ color: '#374151', fontSize: '0.6rem', flexShrink: 0 }}>
-                            {isSubOpen ? '▾' : '▸'}
-                          </span>
-                          <span
-                            style={{
-                              fontSize: '0.72rem',
-                              color: isSubOpen ? '#94a3b8' : '#4b5563',
-                              fontWeight: 600,
-                              transition: 'color 0.15s',
-                            }}
-                          >
-                            {sub}
-                          </span>
-                          <span
-                            style={{
-                              marginLeft: 'auto',
-                              fontSize: '0.6rem',
-                              color: '#374151',
-                              background: '#111827',
-                              padding: '1px 5px',
-                              borderRadius: 10,
-                            }}
-                          >
-                            {leaves.length}
-                          </span>
-                        </button>
-
-                        {/* Leaf nodes */}
-                        {isSubOpen &&
-                          leaves.map((skill) => (
-                            <LeafRow
-                              key={skill.path}
-                              skill={skill}
-                              selected={selectedSkill?.path === skill.path}
-                              onSelect={selectLeaf}
-                              depth={2}
-                              accentColor={meta.color}
-                            />
-                          ))}
-                      </div>
-                    );
-                  })}
+                  Array.from(node.children.values())
+                    .sort((a, b) => {
+                      const aIsFolder = a.children.size > 0;
+                      const bIsFolder = b.children.size > 0;
+                      if (aIsFolder && !bIsFolder) return -1;
+                      if (!aIsFolder && bIsFolder) return 1;
+                      return a.label.localeCompare(b.label);
+                    })
+                    .map((child) => (
+                      <TreeNodeRow
+                        key={child.fullPath}
+                        node={child}
+                        depth={1}
+                        accentColor={meta.color}
+                        openPaths={openPaths}
+                        togglePath={togglePath}
+                        selectedPath={selectedSkill?.path ?? null}
+                        onSelectLeaf={selectLeaf}
+                      />
+                    ))}
               </div>
             );
           })}
         </div>
       </div>
 
-      {/* ── Main panel ── */}
+      {/* ── Main content panel ── */}
       <div
         style={{
           flex: 1,
@@ -415,14 +546,14 @@ export default function SkillTree() {
                 textTransform: 'uppercase',
               }}
             >
-              select a skill to read
+              select a skill node to read
             </div>
           </div>
         )}
 
         {selectedSkill && (
           <div style={{ maxWidth: 760 }}>
-            {/* Breadcrumb */}
+            {/* Breadcrumb path */}
             <div
               style={{
                 fontSize: '0.68rem',
@@ -432,7 +563,7 @@ export default function SkillTree() {
                 textTransform: 'uppercase',
               }}
             >
-              {selectedSkill.path?.split('/').join(' / ')}
+              {selectedSkill.path?.split('/').join(' › ')}
             </div>
 
             {/* Title */}
@@ -448,7 +579,7 @@ export default function SkillTree() {
               {selectedSkill.name}
             </h1>
 
-            {/* Description badge */}
+            {/* Description */}
             {selectedSkill.description && (
               <p
                 style={{
@@ -465,30 +596,17 @@ export default function SkillTree() {
               </p>
             )}
 
-            {/* Divider */}
-            <div
-              style={{
-                height: 1,
-                background: 'rgba(99,102,241,0.1)',
-                marginBottom: 28,
-              }}
-            />
+            <div style={{ height: 1, background: 'rgba(99,102,241,0.1)', marginBottom: 28 }} />
 
-            {/* Content */}
+            {/* Markdown content */}
             {contentLoading ? (
               <div style={{ color: '#374151', fontSize: '0.78rem', letterSpacing: '0.06em' }}>
                 loading content...
               </div>
             ) : selectedSkill.content ? (
               <div
-                style={{
-                  fontSize: '0.88rem',
-                  lineHeight: 1.8,
-                  color: '#94a3b8',
-                }}
-                dangerouslySetInnerHTML={{
-                  __html: renderMarkdown(selectedSkill.content),
-                }}
+                style={{ fontSize: '0.88rem', lineHeight: 1.8, color: '#94a3b8' }}
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedSkill.content) }}
               />
             ) : (
               <div style={{ color: '#1f2937', fontSize: '0.78rem' }}>no content available</div>
@@ -497,62 +615,5 @@ export default function SkillTree() {
         )}
       </div>
     </div>
-  );
-}
-
-function LeafRow({
-  skill,
-  selected,
-  onSelect,
-  depth,
-  accentColor,
-}: {
-  skill: Skill;
-  selected: boolean;
-  onSelect: (s: Skill) => void;
-  depth: number;
-  accentColor: string;
-}) {
-  const paddingLeft = depth === 1 ? 38 : 54;
-  return (
-    <button
-      onClick={() => onSelect(skill)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 7,
-        width: '100%',
-        padding: `5px 16px 5px ${paddingLeft}px`,
-        background: selected ? `${accentColor}12` : 'transparent',
-        border: 'none',
-        borderLeft: selected ? `2px solid ${accentColor}` : '2px solid transparent',
-        cursor: 'pointer',
-        textAlign: 'left',
-        transition: 'background 0.1s',
-      }}
-      onMouseEnter={(e) => {
-        if (!selected)
-          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(99,102,241,0.05)';
-      }}
-      onMouseLeave={(e) => {
-        if (!selected)
-          (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
-      }}
-    >
-      <span style={{ color: '#1f2937', fontSize: '0.55rem', flexShrink: 0 }}>◆</span>
-      <span
-        style={{
-          fontSize: '0.72rem',
-          color: selected ? accentColor : '#4b5563',
-          fontWeight: selected ? 600 : 400,
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          transition: 'color 0.1s',
-        }}
-      >
-        {skill.name}
-      </span>
-    </button>
   );
 }
