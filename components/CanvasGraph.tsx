@@ -123,6 +123,7 @@ export default function CanvasGraph() {
   const [skills, setSkills] = useState<Skill[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
   const [panelVisible, setPanelVisible] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
@@ -208,7 +209,7 @@ export default function CanvasGraph() {
 
     if (allTopKeys.length === 0) return { nodes, edges }
 
-    const catRadius = 240
+    const catRadius = 420
     allTopKeys.forEach((top, i) => {
       const angle = (i / allTopKeys.length) * Math.PI * 2 - Math.PI / 2
       const nx = cx + Math.cos(angle) * catRadius
@@ -234,7 +235,7 @@ export default function CanvasGraph() {
       const directSkills = group.skills
 
       // Subfolder nodes (mid-level)
-      const subRadius = 150
+      const subRadius = 260
       const totalSubs = subfolders.length
       subfolders.forEach(([sub, subSkills], si) => {
         const subSpread = Math.min((totalSubs - 1) * 0.45, Math.PI * 0.8)
@@ -258,7 +259,7 @@ export default function CanvasGraph() {
         edges.push({ source: `cat_${top}`, target: subId, color, width: 1 })
 
         // Leaf nodes under subfolder
-        const leafRadius = 100
+        const leafRadius = 180
         subSkills.forEach((skill, li) => {
           const leafSpread = Math.min((subSkills.length - 1) * 0.5, Math.PI * 0.7)
           const leafAngle = subSkills.length === 1
@@ -281,7 +282,7 @@ export default function CanvasGraph() {
       })
 
       // Direct skills (no subfolder)
-      const dRadius = 130
+      const dRadius = 220
       directSkills.forEach((skill, di) => {
         const dSpread = Math.min((directSkills.length - 1) * 0.45, Math.PI * 0.7)
         const dAngle = directSkills.length === 1
@@ -380,7 +381,7 @@ export default function CanvasGraph() {
       simTicksRef.current++
       const nodes = nodesRef.current
       const edges = edgesRef.current
-      const alpha = Math.max(0, 1 - simTicksRef.current / 180)
+      const alpha = Math.max(0, 1 - simTicksRef.current / 300)
 
       // Repulsion
       for (let i = 0; i < nodes.length; i++) {
@@ -390,9 +391,9 @@ export default function CanvasGraph() {
           const dx = b.x - a.x
           const dy = b.y - a.y
           const dist = Math.sqrt(dx * dx + dy * dy) || 1
-          const minDist = a.radius + b.radius + 40
+          const minDist = a.radius + b.radius + 120
           if (dist < minDist) {
-            const force = (minDist - dist) / dist * 0.3 * alpha
+            const force = (minDist - dist) / dist * 0.5 * alpha
             a.vx -= dx * force
             a.vy -= dy * force
             b.vx += dx * force
@@ -410,8 +411,8 @@ export default function CanvasGraph() {
         const dx = t.x - s.x
         const dy = t.y - s.y
         const dist = Math.sqrt(dx * dx + dy * dy) || 1
-        const targetDist = s.type === 'category' ? 220 : 160
-        const force = (dist - targetDist) / dist * 0.08 * alpha
+        const targetDist = s.type === 'category' ? 380 : 240
+        const force = (dist - targetDist) / dist * 0.04 * alpha
         s.vx += dx * force
         s.vy += dy * force
         t.vx -= dx * force
@@ -440,8 +441,10 @@ export default function CanvasGraph() {
       ctx.fill()
     }
 
-    const drawNode = (ctx: CanvasRenderingContext2D, node: Node, hovered: boolean, dimmed: boolean, pulse: number) => {
+    const drawNode = (ctx: CanvasRenderingContext2D, node: Node, hovered: boolean, dimmed: boolean, pulse: number, searchMatch = true) => {
       const [cr, cg, cb] = hexToRgb(node.color)
+      if (!searchMatch) ctx.globalAlpha = 0.1
+      else ctx.globalAlpha = 1.0
       let glowIntensity = node.type === 'center' ? 0.5 : node.type === 'category' ? 0.35 : 0.2
       let r = node.radius
 
@@ -573,12 +576,18 @@ export default function CanvasGraph() {
         }
 
         // Draw nodes
-        for (const node of nodesRef.current) {
+        const sq = searchQuery.toLowerCase()
+      for (const node of nodesRef.current) {
           const hovered = hoveredId === node.id
           const dimmed = highlightCat !== null && node.type !== 'center' && node.category !== highlightCat
-          drawNode(ctx, node, hovered, dimmed, pulseRef.current)
+          const nodeSearchMatch = !sq || node.type !== 'skill' ||
+            node.label.toLowerCase().includes(sq) ||
+            (node.skill?.name ?? '').toLowerCase().includes(sq) ||
+            (node.skill?.description ?? '').toLowerCase().includes(sq)
+          drawNode(ctx, node, hovered, dimmed, pulseRef.current, nodeSearchMatch)
         }
 
+        ctx.globalAlpha = 1.0
         // Tooltip
         if (tooltipRef.current) {
           const { text, x, y } = tooltipRef.current
@@ -918,6 +927,64 @@ export default function CanvasGraph() {
 
   return (
     <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#080B14', position: 'relative' }}>
+      {/* Search bar overlay */}
+      <div style={{ position: 'absolute', top: 16, right: 20, zIndex: 200, display: 'flex', alignItems: 'center' }}>
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          placeholder="search skills..."
+          style={{ background: 'rgba(8,11,20,0.9)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: 20, padding: '7px 14px', color: '#94a3b8', fontSize: '0.72rem', fontFamily: "'Courier New', Courier, monospace", outline: 'none', width: 200, backdropFilter: 'blur(10px)' }}
+          onFocus={e => (e.currentTarget.style.borderColor = 'rgba(99,102,241,0.5)')}
+          onBlur={e => (e.currentTarget.style.borderColor = 'rgba(99,102,241,0.25)')}
+        />
+        {searchQuery && <button onClick={() => setSearchQuery('')} style={{ background: 'transparent', border: 'none', color: '#374151', cursor: 'pointer', marginLeft: 6, fontSize: '0.9rem' }}>×</button>}
+      </div>
+      {/* Search bar overlay */}
+      <div style={{ position: 'absolute', top: 16, right: 20, zIndex: 200, display: 'flex', alignItems: 'center' }}>
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          placeholder="search skills..."
+          style={{ background: 'rgba(8,11,20,0.9)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: 20, padding: '7px 14px', color: '#94a3b8', fontSize: '0.72rem', fontFamily: "'Courier New', Courier, monospace", outline: 'none', width: 200, backdropFilter: 'blur(10px)' }}
+          onFocus={e => (e.currentTarget.style.borderColor = 'rgba(99,102,241,0.5)')}
+          onBlur={e => (e.currentTarget.style.borderColor = 'rgba(99,102,241,0.25)')}
+        />
+        {searchQuery && <button onClick={() => setSearchQuery('')} style={{ background: 'transparent', border: 'none', color: '#374151', cursor: 'pointer', marginLeft: 6, fontSize: '0.9rem' }}>×</button>}
+      </div>
+      {/* Search bar */}
+      <div style={{ position: 'absolute', top: 16, right: 20, zIndex: 200, display: 'flex', alignItems: 'center' }}>
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={e => {
+            setSearchQuery(e.target.value)
+            const q = e.target.value.toLowerCase()
+            if (!q) { nodesRef.current.forEach(n => { n.color = n.color.replace('33', ''); }); return; }
+            nodesRef.current.forEach(n => {
+              if (n.type === 'center') return
+              const match = n.label.toLowerCase().includes(q) || n.skill?.description?.toLowerCase().includes(q)
+              if (!match && n.type === 'skill') {
+                n.color = n.color.length === 9 ? n.color : n.color + '33'
+              }
+            })
+          }}
+          placeholder="search skills..."
+          style={{
+            background: 'rgba(8,11,20,0.9)', border: '1px solid rgba(99,102,241,0.25)',
+            borderRadius: 20, padding: '7px 14px', color: '#94a3b8',
+            fontSize: '0.72rem', fontFamily: "'Courier New', Courier, monospace",
+            outline: 'none', width: 200, backdropFilter: 'blur(10px)',
+          }}
+          onFocus={e => (e.currentTarget.style.borderColor = 'rgba(99,102,241,0.5)')}
+          onBlur={e => (e.currentTarget.style.borderColor = 'rgba(99,102,241,0.25)')}
+        />
+        {searchQuery && (
+          <button onClick={() => { setSearchQuery(''); nodesRef.current.forEach(n => { n.color = n.color.replace('33',''); }); }}
+            style={{ background: 'transparent', border: 'none', color: '#374151', cursor: 'pointer', marginLeft: 6, fontSize: '0.9rem' }}>×</button>
+        )}
+      </div>
       <style>{`
         @keyframes fadeOut { 0%,60%{opacity:1} 100%{opacity:0} }
         .chunk-card { transition: border-color 0.15s; }
