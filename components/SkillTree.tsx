@@ -5,6 +5,7 @@ import { useEffect, useState, useCallback } from 'react';
 const SUPABASE_URL = 'https://vpxncpcgokciivykhezc.supabase.co';
 const SUPABASE_KEY =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZweG5jcGNnb2tjaWl2eWtoZXpjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MzYxMDc4OCwiZXhwIjoyMDg5MTg2Nzg4fQ.MQUa3x80eny3FMSS1g4q5P3BLcdC5oWH6Okk3lY2_lM';
+// Claude API calls go through /api/generate-prompt (key is server-side only)
 
 interface Skill {
   name: string;
@@ -13,12 +14,8 @@ interface Skill {
   category: string;
   description: string | null;
 }
+interface SkillWithContent extends Skill { content?: string; }
 
-interface SkillWithContent extends Skill {
-  content?: string;
-}
-
-// Tree node — either a folder (has children) or a leaf (has skill data)
 interface TreeNode {
   label: string;
   fullPath: string;
@@ -34,59 +31,37 @@ const CATEGORY_META: Record<string, { icon: string; color: string; label: string
   studio:   { icon: '🏗',  color: '#f59e0b', label: 'Studio'   },
   ops:      { icon: '⚙️', color: '#9ca3af', label: 'Ops'      },
 };
-
 const CATEGORY_ORDER = ['voices', 'research', 'formats', 'studio', 'ops'];
 
-// Build a nested tree from flat skill list using path segments
 function buildTree(skills: Skill[]): Map<string, TreeNode> {
   const roots = new Map<string, TreeNode>();
-
   for (const skill of skills) {
     if (!skill.path) continue;
     const parts = skill.path.split('/').filter(Boolean);
     if (parts.length === 0) continue;
-
     let current = roots;
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
       const isLast = i === parts.length - 1;
       const fullPath = parts.slice(0, i + 1).join('/');
-
       if (!current.has(part)) {
-        current.set(part, {
-          label: part,
-          fullPath,
-          isLeaf: false,
-          children: new Map(),
-        });
+        current.set(part, { label: part, fullPath, isLeaf: false, children: new Map() });
       }
-
       const node = current.get(part)!;
-
-      if (isLast) {
-        // Mark as leaf and attach skill data
-        node.isLeaf = true;
-        node.skill = skill;
-      }
-
+      if (isLast) { node.isLeaf = true; node.skill = skill; }
       current = node.children;
     }
   }
-
   return roots;
 }
 
-// Count total leaf nodes in a subtree
 function countLeaves(node: TreeNode): number {
   if (node.isLeaf && node.children.size === 0) return 1;
   let count = node.isLeaf ? 1 : 0;
-  for (const child of node.children.values()) {
-    count += countLeaves(child);
-  }
+  for (const child of node.children.values()) count += countLeaves(child);
   return count;
 }
 
-// Minimal markdown → HTML transform
 function renderMarkdown(md: string): string {
   let html = md
     .replace(/^### (.+)$/gm, '<h3 style="color:#e2e8f0;font-size:1rem;font-weight:700;margin:1.2em 0 0.4em 0">$1</h3>')
@@ -99,171 +74,99 @@ function renderMarkdown(md: string): string {
     .replace(/^> (.+)$/gm, '<blockquote style="border-left:3px solid #4b5563;padding-left:0.75em;color:#94a3b8;margin:0.5em 0">$1</blockquote>')
     .replace(/^[-*•] (.+)$/gm, '<li style="margin:0.2em 0;color:#94a3b8;list-style:disc;margin-left:1.2em">$1</li>')
     .replace(/^\d+\. (.+)$/gm, '<li style="margin:0.2em 0;color:#94a3b8;list-style:decimal;margin-left:1.2em">$1</li>');
-
   html = html.replace(/(<li[^>]*>.*<\/li>\n?)+/g, (block) => `<ul style="margin:0.5em 0;padding:0">${block}</ul>`);
-
-  html = html
-    .split(/\n{2,}/)
-    .map((block) => {
-      if (/^<[h1-6hlibcpquor]/.test(block.trim())) return block;
-      if (block.trim() === '') return '';
-      return `<p style="color:#94a3b8;margin:0.6em 0;line-height:1.75">${block.trim()}</p>`;
-    })
-    .join('\n');
-
+  html = html.split(/\n{2,}/).map((block) => {
+    if (/^<[h1-6hlibcpquor]/.test(block.trim())) return block;
+    if (block.trim() === '') return '';
+    return `<p style="color:#94a3b8;margin:0.6em 0;line-height:1.75">${block.trim()}</p>`;
+  }).join('\n');
   return html;
 }
 
-// Recursive tree node renderer
-function TreeNodeRow({
-  node,
-  depth,
-  accentColor,
-  openPaths,
-  togglePath,
-  selectedPath,
-  onSelectLeaf,
-}: {
-  node: TreeNode;
-  depth: number;
-  accentColor: string;
-  openPaths: Set<string>;
-  togglePath: (p: string) => void;
-  selectedPath: string | null;
-  onSelectLeaf: (skill: Skill) => void;
+function TreeNodeRow({ node, depth, accentColor, openPaths, togglePath, selectedPath, onSelectLeaf, onAddToBuilder }: {
+  node: TreeNode; depth: number; accentColor: string;
+  openPaths: Set<string>; togglePath: (p: string) => void;
+  selectedPath: string | null; onSelectLeaf: (skill: Skill) => void;
+  onAddToBuilder: (skill: Skill) => void;
 }) {
   const isOpen = openPaths.has(node.fullPath);
   const isSelected = selectedPath === node.fullPath;
   const hasChildren = node.children.size > 0;
   const paddingLeft = 18 + depth * 16;
+  const [hovered, setHovered] = useState(false);
 
-  // Pure leaf node (no children)
   if (node.isLeaf && !hasChildren) {
     return (
-      <button
-        onClick={() => node.skill && onSelectLeaf(node.skill)}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 7,
-          width: '100%',
-          padding: `5px 16px 5px ${paddingLeft}px`,
-          background: isSelected ? `${accentColor}14` : 'transparent',
-          border: 'none',
-          borderLeft: isSelected ? `2px solid ${accentColor}` : '2px solid transparent',
-          cursor: 'pointer',
-          textAlign: 'left',
-          transition: 'background 0.1s',
-        }}
-        onMouseEnter={(e) => {
-          if (!isSelected) (e.currentTarget as HTMLButtonElement).style.background = 'rgba(99,102,241,0.05)';
-        }}
-        onMouseLeave={(e) => {
-          if (!isSelected) (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
-        }}
+      <div
+        style={{ position: 'relative' }}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
       >
-        <span style={{ color: '#1f2937', fontSize: '0.5rem', flexShrink: 0 }}>◆</span>
-        <span
+        <button
+          onClick={() => node.skill && onSelectLeaf(node.skill)}
           style={{
-            fontSize: '0.71rem',
-            color: isSelected ? accentColor : '#4b5563',
-            fontWeight: isSelected ? 600 : 400,
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            transition: 'color 0.1s',
+            display: 'flex', alignItems: 'center', gap: 7, width: '100%',
+            padding: `5px ${hovered ? '44px' : '16px'} 5px ${paddingLeft}px`,
+            background: isSelected ? `${accentColor}14` : hovered ? 'rgba(99,102,241,0.05)' : 'transparent',
+            border: 'none', borderLeft: isSelected ? `2px solid ${accentColor}` : '2px solid transparent',
+            cursor: 'pointer', textAlign: 'left', transition: 'all 0.1s',
           }}
         >
-          {node.label}
-        </span>
-      </button>
+          <span style={{ color: '#1f2937', fontSize: '0.5rem', flexShrink: 0 }}>◆</span>
+          <span style={{ fontSize: '0.71rem', color: isSelected ? accentColor : '#4b5563', fontWeight: isSelected ? 600 : 400, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', transition: 'color 0.1s' }}>
+            {node.label}
+          </span>
+        </button>
+        {hovered && node.skill && (
+          <button
+            onClick={(e) => { e.stopPropagation(); node.skill && onAddToBuilder(node.skill); }}
+            title="Add to prompt builder"
+            style={{
+              position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
+              background: `${accentColor}22`, border: `1px solid ${accentColor}44`,
+              borderRadius: 4, color: accentColor, fontSize: '0.6rem', cursor: 'pointer',
+              padding: '2px 6px', fontFamily: 'inherit', whiteSpace: 'nowrap',
+            }}
+          >
+            + build
+          </button>
+        )}
+      </div>
     );
   }
 
-  // Folder node (may also be a leaf if it has both children and skill data)
   const leafCount = countLeaves(node);
-
   return (
     <div>
       <button
-        onClick={() => {
-          togglePath(node.fullPath);
-          // If it's also a leaf, select it
-          if (node.isLeaf && node.skill) onSelectLeaf(node.skill);
-        }}
+        onClick={() => { togglePath(node.fullPath); if (node.isLeaf && node.skill) onSelectLeaf(node.skill); }}
         style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 7,
-          width: '100%',
+          display: 'flex', alignItems: 'center', gap: 7, width: '100%',
           padding: `6px 16px 6px ${paddingLeft}px`,
           background: isSelected ? `${accentColor}10` : 'transparent',
-          border: 'none',
-          borderLeft: isSelected ? `2px solid ${accentColor}66` : '2px solid transparent',
-          cursor: 'pointer',
-          textAlign: 'left',
-          transition: 'background 0.12s',
+          border: 'none', borderLeft: isSelected ? `2px solid ${accentColor}66` : '2px solid transparent',
+          cursor: 'pointer', textAlign: 'left', transition: 'background 0.12s',
         }}
-        onMouseEnter={(e) => {
-          (e.currentTarget as HTMLButtonElement).style.background = 'rgba(99,102,241,0.05)';
-        }}
-        onMouseLeave={(e) => {
-          (e.currentTarget as HTMLButtonElement).style.background =
-            isSelected ? `${accentColor}10` : 'transparent';
-        }}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(99,102,241,0.05)'; }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = isSelected ? `${accentColor}10` : 'transparent'; }}
       >
-        <span style={{ color: '#374151', fontSize: '0.58rem', flexShrink: 0, width: 10 }}>
-          {isOpen ? '▾' : '▸'}
-        </span>
+        <span style={{ color: '#374151', fontSize: '0.58rem', flexShrink: 0, width: 10 }}>{isOpen ? '▾' : '▸'}</span>
         <span style={{ fontSize: '0.58rem', flexShrink: 0 }}>{isOpen ? '📂' : '📁'}</span>
-        <span
-          style={{
-            fontSize: '0.72rem',
-            color: isOpen ? '#94a3b8' : '#4b5563',
-            fontWeight: 600,
-            flex: 1,
-            transition: 'color 0.12s',
-          }}
-        >
-          {node.label}
-        </span>
-        <span
-          style={{
-            fontSize: '0.6rem',
-            color: '#374151',
-            background: '#111827',
-            padding: '1px 5px',
-            borderRadius: 10,
-            marginRight: 4,
-            flexShrink: 0,
-          }}
-        >
-          {leafCount}
-        </span>
+        <span style={{ fontSize: '0.72rem', color: isOpen ? '#94a3b8' : '#4b5563', fontWeight: 600, flex: 1, transition: 'color 0.12s' }}>{node.label}</span>
+        <span style={{ fontSize: '0.6rem', color: '#374151', background: '#111827', padding: '1px 5px', borderRadius: 10, marginRight: 4, flexShrink: 0 }}>{leafCount}</span>
       </button>
-
       {isOpen && (
         <div>
           {Array.from(node.children.values())
             .sort((a, b) => {
-              // Folders before leaves
-              const aIsFolder = a.children.size > 0;
-              const bIsFolder = b.children.size > 0;
-              if (aIsFolder && !bIsFolder) return -1;
-              if (!aIsFolder && bIsFolder) return 1;
+              const af = a.children.size > 0, bf = b.children.size > 0;
+              if (af && !bf) return -1; if (!af && bf) return 1;
               return a.label.localeCompare(b.label);
             })
             .map((child) => (
-              <TreeNodeRow
-                key={child.fullPath}
-                node={child}
-                depth={depth + 1}
-                accentColor={accentColor}
-                openPaths={openPaths}
-                togglePath={togglePath}
-                selectedPath={selectedPath}
-                onSelectLeaf={onSelectLeaf}
-              />
+              <TreeNodeRow key={child.fullPath} node={child} depth={depth + 1} accentColor={accentColor}
+                openPaths={openPaths} togglePath={togglePath} selectedPath={selectedPath}
+                onSelectLeaf={onSelectLeaf} onAddToBuilder={onAddToBuilder} />
             ))}
         </div>
       )}
@@ -271,6 +174,195 @@ function TreeNodeRow({
   );
 }
 
+// ── Prompt Builder Panel ──────────────────────────────────────────────────────
+function PromptBuilder({ pinnedSkills, onRemove, onClear }: {
+  pinnedSkills: SkillWithContent[];
+  onRemove: (path: string) => void;
+  onClear: () => void;
+}) {
+  const [intent, setIntent] = useState('');
+  const [generatedPrompt, setGeneratedPrompt] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const generatePrompt = async () => {
+    if (!intent.trim() && pinnedSkills.length === 0) return;
+    setGenerating(true);
+    setGeneratedPrompt('');
+
+    const skillsContext = pinnedSkills.map(s =>
+      `### SKILL: ${s.path}\n**Description:** ${s.description || 'n/a'}\n\n${s.content || '(no content)'}`
+    ).join('\n\n---\n\n');
+
+    const systemPrompt = `You are Eddie's prompt generator. Given a set of skill files and a user's intent, generate a clear, actionable prompt that Eddie (an AI assistant) can execute. The prompt should:
+- Reference the relevant skills by name/path
+- Include all necessary context from the skill files
+- Be direct and specific about what to do
+- Be ready to copy-paste and send to Eddie
+
+Output ONLY the final prompt. No preamble, no explanation.`;
+
+    const userMsg = `SELECTED SKILLS:
+${skillsContext}
+
+USER INTENT:
+${intent || '(combine these skills into a workflow)'}
+
+Generate a prompt I can send to Eddie to execute this.`;
+
+    try {
+      const res = await fetch('/api/generate-prompt', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ skills: pinnedSkills, intent }),
+      });
+      const data = await res.json();
+      setGeneratedPrompt(data.prompt || 'Error generating prompt');
+    } catch (e) {
+      setGeneratedPrompt('Error: ' + (e as Error).message);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const copyToClipboard = () => {
+    navigator.clipboard.writeText(generatedPrompt);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', height: '100%',
+      background: '#080B14', fontFamily: "'Courier New', Courier, monospace",
+    }}>
+      {/* Header */}
+      <div style={{ padding: '20px 24px 16px', borderBottom: '1px solid rgba(99,102,241,0.12)', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: '0.85rem', fontWeight: 800, color: '#a5b4fc', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+              ⚡ prompt builder
+            </div>
+            <div style={{ fontSize: '0.65rem', color: '#374151', marginTop: 2 }}>
+              select skills → describe intent → generate prompt
+            </div>
+          </div>
+          {pinnedSkills.length > 0 && (
+            <button onClick={onClear} style={{ background: 'transparent', border: '1px solid #374151', borderRadius: 6, color: '#4b5563', fontSize: '0.62rem', padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit' }}>
+              clear all
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto', padding: '16px 24px', display: 'flex', flexDirection: 'column', gap: 16, scrollbarWidth: 'thin', scrollbarColor: 'rgba(99,102,241,0.2) transparent' }}>
+
+        {/* Pinned skills chips */}
+        <div>
+          <div style={{ fontSize: '0.62rem', color: '#374151', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+            selected skills {pinnedSkills.length > 0 ? `(${pinnedSkills.length})` : ''}
+          </div>
+          {pinnedSkills.length === 0 ? (
+            <div style={{ fontSize: '0.72rem', color: '#1f2937', fontStyle: 'italic', padding: '10px 0' }}>
+              hover a skill in the tree and click "+ build" to add it here
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {pinnedSkills.map((s) => {
+                const cat = s.path?.split('/')?.[0] || 'ops';
+                const meta = CATEGORY_META[cat] || { color: '#6b7280' };
+                return (
+                  <div key={s.path} style={{
+                    display: 'flex', alignItems: 'center', gap: 5,
+                    background: `${meta.color}14`, border: `1px solid ${meta.color}33`,
+                    borderRadius: 20, padding: '4px 10px 4px 10px', fontSize: '0.68rem', color: meta.color,
+                  }}>
+                    <span>{s.name}</span>
+                    <button onClick={() => onRemove(s.path)} style={{
+                      background: 'transparent', border: 'none', color: `${meta.color}88`,
+                      cursor: 'pointer', fontSize: '0.7rem', padding: '0 0 0 2px', lineHeight: 1,
+                    }}>×</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Intent textarea */}
+        <div>
+          <div style={{ fontSize: '0.62rem', color: '#374151', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+            what do you want to build or do?
+          </div>
+          <textarea
+            value={intent}
+            onChange={(e) => setIntent(e.target.value)}
+            placeholder="e.g. create a viral hook post combining the app store research and ernesto voice for the chess niche"
+            style={{
+              width: '100%', minHeight: 100, background: '#0a0d18',
+              border: '1px solid rgba(99,102,241,0.15)', borderRadius: 8,
+              color: '#94a3b8', fontSize: '0.78rem', padding: '10px 12px',
+              resize: 'vertical', fontFamily: 'inherit', outline: 'none',
+              lineHeight: 1.6, boxSizing: 'border-box',
+            }}
+            onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(99,102,241,0.4)'; }}
+            onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(99,102,241,0.15)'; }}
+          />
+        </div>
+
+        {/* Generate button */}
+        <button
+          onClick={generatePrompt}
+          disabled={generating || (pinnedSkills.length === 0 && !intent.trim())}
+          style={{
+            background: generating ? 'rgba(99,102,241,0.1)' : 'rgba(99,102,241,0.18)',
+            border: '1px solid rgba(99,102,241,0.3)', borderRadius: 8,
+            color: generating ? '#4b5563' : '#a5b4fc', fontSize: '0.75rem',
+            fontWeight: 700, padding: '10px', cursor: generating ? 'not-allowed' : 'pointer',
+            fontFamily: 'inherit', letterSpacing: '0.06em', textTransform: 'uppercase',
+            transition: 'all 0.15s',
+          }}
+        >
+          {generating ? '⏳ generating...' : '⚡ generate prompt'}
+        </button>
+
+        {/* Generated prompt output */}
+        {generatedPrompt && (
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div style={{ fontSize: '0.62rem', color: '#374151', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                generated prompt
+              </div>
+              <button
+                onClick={copyToClipboard}
+                style={{
+                  background: copied ? 'rgba(20,184,166,0.15)' : 'rgba(99,102,241,0.12)',
+                  border: `1px solid ${copied ? 'rgba(20,184,166,0.3)' : 'rgba(99,102,241,0.2)'}`,
+                  borderRadius: 6, color: copied ? '#14b8a6' : '#6366f1',
+                  fontSize: '0.65rem', padding: '4px 10px', cursor: 'pointer',
+                  fontFamily: 'inherit', transition: 'all 0.15s',
+                }}
+              >
+                {copied ? '✓ copied!' : '📋 copy'}
+              </button>
+            </div>
+            <div style={{
+              background: '#0a0d18', border: '1px solid rgba(99,102,241,0.15)',
+              borderRadius: 8, padding: '12px 14px', fontSize: '0.78rem',
+              color: '#94a3b8', lineHeight: 1.7, whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word', maxHeight: 320, overflowY: 'auto',
+              scrollbarWidth: 'thin', scrollbarColor: 'rgba(99,102,241,0.2) transparent',
+            }}>
+              {generatedPrompt}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Main SkillTree ─────────────────────────────────────────────────────────
 export default function SkillTree() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
@@ -278,341 +370,181 @@ export default function SkillTree() {
   const [openPaths, setOpenPaths] = useState<Set<string>>(new Set(['voices']));
   const [selectedSkill, setSelectedSkill] = useState<SkillWithContent | null>(null);
   const [contentLoading, setContentLoading] = useState(false);
+  const [rightMode, setRightMode] = useState<'viewer' | 'builder'>('viewer');
+  const [pinnedSkills, setPinnedSkills] = useState<SkillWithContent[]>([]);
 
   useEffect(() => {
     fetch(`${SUPABASE_URL}/rest/v1/skills?select=name,path,parent,category,description&limit=500`, {
-      headers: {
-        apikey: SUPABASE_KEY,
-        Authorization: `Bearer ${SUPABASE_KEY}`,
-      },
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
     })
       .then((r) => r.json())
-      .then((data) => {
-        if (Array.isArray(data)) setSkills(data);
-        else setError('Unexpected response from Supabase');
-        setLoading(false);
-      })
-      .catch((e) => {
-        setError(e.message);
-        setLoading(false);
-      });
+      .then((data) => { if (Array.isArray(data)) setSkills(data); else setError('Unexpected response'); setLoading(false); })
+      .catch((e) => { setError(e.message); setLoading(false); });
   }, []);
 
   const togglePath = useCallback((path: string) => {
-    setOpenPaths((prev) => {
-      const next = new Set(prev);
-      next.has(path) ? next.delete(path) : next.add(path);
-      return next;
-    });
+    setOpenPaths((prev) => { const next = new Set(prev); next.has(path) ? next.delete(path) : next.add(path); return next; });
+  }, []);
+
+  const fetchContent = useCallback(async (skill: Skill): Promise<string | undefined> => {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/skills?path=eq.${encodeURIComponent(skill.path)}&select=content`,
+      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
+    );
+    const data = await res.json();
+    return Array.isArray(data) && data.length > 0 ? data[0].content : undefined;
   }, []);
 
   const selectLeaf = useCallback(async (skill: Skill) => {
     setSelectedSkill(skill);
     setContentLoading(true);
     try {
-      const res = await fetch(
-        `${SUPABASE_URL}/rest/v1/skills?path=eq.${encodeURIComponent(skill.path)}&select=content,name,description`,
-        {
-          headers: {
-            apikey: SUPABASE_KEY,
-            Authorization: `Bearer ${SUPABASE_KEY}`,
-          },
-        }
-      );
-      const data = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        setSelectedSkill({ ...skill, content: data[0].content });
+      const content = await fetchContent(skill);
+      setSelectedSkill({ ...skill, content });
+    } catch { /* silent */ } finally { setContentLoading(false); }
+  }, [fetchContent]);
+
+  const addToBuilder = useCallback(async (skill: Skill) => {
+    setPinnedSkills((prev) => {
+      if (prev.find((s) => s.path === skill.path)) return prev;
+      return [...prev, skill];
+    });
+    setRightMode('builder');
+    // Fetch content for this skill in background
+    fetchContent(skill).then((content) => {
+      if (content) {
+        setPinnedSkills((prev) => prev.map((s) => s.path === skill.path ? { ...s, content } : s));
       }
-    } catch {
-      // leave without content
-    } finally {
-      setContentLoading(false);
-    }
+    });
+  }, [fetchContent]);
+
+  const removeFromBuilder = useCallback((path: string) => {
+    setPinnedSkills((prev) => prev.filter((s) => s.path !== path));
   }, []);
 
-  // Build the full tree, then split into top-level category roots
   const fullTree = buildTree(skills);
-
-  // Get category roots in order
-  const catRoots = CATEGORY_ORDER
-    .filter((c) => fullTree.has(c))
-    .map((c) => ({ key: c, node: fullTree.get(c)! }));
-
-  // Any extra categories not in the standard order
-  const extraRoots = Array.from(fullTree.entries())
-    .filter(([k]) => !CATEGORY_ORDER.includes(k))
-    .map(([k, n]) => ({ key: k, node: n }));
-
+  const catRoots = CATEGORY_ORDER.filter((c) => fullTree.has(c)).map((c) => ({ key: c, node: fullTree.get(c)! }));
+  const extraRoots = Array.from(fullTree.entries()).filter(([k]) => !CATEGORY_ORDER.includes(k)).map(([k, n]) => ({ key: k, node: n }));
   const allRoots = [...catRoots, ...extraRoots];
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        height: '100vh',
-        width: '100vw',
-        background: '#080B14',
-        fontFamily: "'Courier New', Courier, monospace",
-        overflow: 'hidden',
-      }}
-    >
+    <div style={{ display: 'flex', height: '100vh', width: '100vw', background: '#080B14', fontFamily: "'Courier New', Courier, monospace", overflow: 'hidden' }}>
+
       {/* ── Sidebar ── */}
-      <div
-        style={{
-          width: 300,
-          minWidth: 260,
-          maxWidth: 340,
-          borderRight: '1px solid rgba(99,102,241,0.12)',
-          display: 'flex',
-          flexDirection: 'column',
-          overflowY: 'auto',
-          overflowX: 'hidden',
-          background: '#0a0d18',
-          scrollbarWidth: 'thin',
-          scrollbarColor: 'rgba(99,102,241,0.2) transparent',
-        }}
-      >
-        {/* Header */}
-        <div
-          style={{
-            padding: '18px 18px 14px',
-            borderBottom: '1px solid rgba(99,102,241,0.12)',
-            flexShrink: 0,
-          }}
-        >
-          <div
-            style={{
-              fontSize: '1.1rem',
-              fontWeight: 800,
-              color: '#fff',
-              letterSpacing: '0.14em',
-              textTransform: 'uppercase',
-              textShadow: '0 0 18px rgba(99,102,241,0.7)',
-            }}
-          >
-            eddie brain
-          </div>
+      <div style={{ width: 300, minWidth: 260, maxWidth: 340, borderRight: '1px solid rgba(99,102,241,0.12)', display: 'flex', flexDirection: 'column', overflowY: 'auto', overflowX: 'hidden', background: '#0a0d18', scrollbarWidth: 'thin', scrollbarColor: 'rgba(99,102,241,0.2) transparent' }}>
+        <div style={{ padding: '18px 18px 14px', borderBottom: '1px solid rgba(99,102,241,0.12)', flexShrink: 0 }}>
+          <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#fff', letterSpacing: '0.14em', textTransform: 'uppercase', textShadow: '0 0 18px rgba(99,102,241,0.7)' }}>eddie brain</div>
           <div style={{ fontSize: '0.68rem', color: '#374151', marginTop: 3 }}>
             {loading ? 'loading...' : `${skills.filter(s => s.path).length} skill nodes`}
           </div>
         </div>
 
-        {/* Tree */}
         <div style={{ flex: 1, paddingBottom: 72 }}>
-          {loading && (
-            <div style={{ padding: '20px 18px', color: '#374151', fontSize: '0.78rem' }}>
-              loading skills...
-            </div>
-          )}
-          {error && (
-            <div style={{ padding: '20px 18px', color: '#f87171', fontSize: '0.78rem' }}>
-              error: {error}
-            </div>
-          )}
+          {loading && <div style={{ padding: '20px 18px', color: '#374151', fontSize: '0.78rem' }}>loading skills...</div>}
+          {error && <div style={{ padding: '20px 18px', color: '#f87171', fontSize: '0.78rem' }}>error: {error}</div>}
 
           {allRoots.map(({ key, node }) => {
             const meta = CATEGORY_META[key] || { icon: '📁', color: '#6b7280', label: key };
             const isCatOpen = openPaths.has(key);
             const totalLeaves = countLeaves(node);
-
             return (
               <div key={key}>
-                {/* ── Top-level category row ── */}
                 <button
                   onClick={() => togglePath(key)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 9,
-                    width: '100%',
-                    padding: '9px 18px',
-                    background: 'transparent',
-                    border: 'none',
-                    borderBottom: '1px solid rgba(99,102,241,0.07)',
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                  }}
-                  onMouseEnter={(e) =>
-                    ((e.currentTarget as HTMLButtonElement).style.background = 'rgba(99,102,241,0.06)')
-                  }
-                  onMouseLeave={(e) =>
-                    ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')
-                  }
+                  style={{ display: 'flex', alignItems: 'center', gap: 9, width: '100%', padding: '9px 18px', background: 'transparent', border: 'none', borderBottom: '1px solid rgba(99,102,241,0.07)', cursor: 'pointer', textAlign: 'left' }}
+                  onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'rgba(99,102,241,0.06)')}
+                  onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}
                 >
-                  <span
-                    style={{
-                      width: 26,
-                      height: 26,
-                      borderRadius: 6,
-                      background: `${meta.color}18`,
-                      border: `1px solid ${meta.color}33`,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '0.82rem',
-                      flexShrink: 0,
-                    }}
-                  >
-                    {meta.icon}
-                  </span>
-                  <span
-                    style={{
-                      flex: 1,
-                      fontSize: '0.75rem',
-                      fontWeight: 700,
-                      color: isCatOpen ? meta.color : '#64748b',
-                      letterSpacing: '0.1em',
-                      textTransform: 'uppercase',
-                      transition: 'color 0.15s',
-                    }}
-                  >
-                    {meta.label}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: '0.62rem',
-                      color: '#374151',
-                      background: '#111827',
-                      padding: '1px 6px',
-                      borderRadius: 10,
-                      marginRight: 4,
-                    }}
-                  >
-                    {totalLeaves}
-                  </span>
-                  <span style={{ color: '#374151', fontSize: '0.62rem' }}>
-                    {isCatOpen ? '▾' : '▸'}
-                  </span>
+                  <span style={{ width: 26, height: 26, borderRadius: 6, background: `${meta.color}18`, border: `1px solid ${meta.color}33`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.82rem', flexShrink: 0 }}>{meta.icon}</span>
+                  <span style={{ flex: 1, fontSize: '0.75rem', fontWeight: 700, color: isCatOpen ? meta.color : '#64748b', letterSpacing: '0.1em', textTransform: 'uppercase', transition: 'color 0.15s' }}>{meta.label}</span>
+                  <span style={{ fontSize: '0.62rem', color: '#374151', background: '#111827', padding: '1px 6px', borderRadius: 10, marginRight: 4 }}>{totalLeaves}</span>
+                  <span style={{ color: '#374151', fontSize: '0.62rem' }}>{isCatOpen ? '▾' : '▸'}</span>
                 </button>
 
-                {/* ── Recursive children ── */}
-                {isCatOpen &&
-                  Array.from(node.children.values())
-                    .sort((a, b) => {
-                      const aIsFolder = a.children.size > 0;
-                      const bIsFolder = b.children.size > 0;
-                      if (aIsFolder && !bIsFolder) return -1;
-                      if (!aIsFolder && bIsFolder) return 1;
-                      return a.label.localeCompare(b.label);
-                    })
-                    .map((child) => (
-                      <TreeNodeRow
-                        key={child.fullPath}
-                        node={child}
-                        depth={1}
-                        accentColor={meta.color}
-                        openPaths={openPaths}
-                        togglePath={togglePath}
-                        selectedPath={selectedSkill?.path ?? null}
-                        onSelectLeaf={selectLeaf}
-                      />
-                    ))}
+                {isCatOpen && Array.from(node.children.values())
+                  .sort((a, b) => { const af = a.children.size > 0, bf = b.children.size > 0; if (af && !bf) return -1; if (!af && bf) return 1; return a.label.localeCompare(b.label); })
+                  .map((child) => (
+                    <TreeNodeRow key={child.fullPath} node={child} depth={1} accentColor={meta.color}
+                      openPaths={openPaths} togglePath={togglePath}
+                      selectedPath={selectedSkill?.path ?? null}
+                      onSelectLeaf={selectLeaf} onAddToBuilder={addToBuilder} />
+                  ))}
               </div>
             );
           })}
         </div>
       </div>
 
-      {/* ── Main content panel ── */}
-      <div
-        style={{
-          flex: 1,
-          overflowY: 'auto',
-          overflowX: 'hidden',
-          padding: '40px 48px 80px',
-          background: '#080B14',
-          scrollbarWidth: 'thin',
-          scrollbarColor: 'rgba(99,102,241,0.2) transparent',
-        }}
-      >
-        {!selectedSkill && (
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              gap: 16,
-              userSelect: 'none',
-            }}
-          >
-            <div style={{ fontSize: '3rem', opacity: 0.12 }}>🧠</div>
-            <div
+      {/* ── Right Panel ── */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+        {/* Mode toggle tabs */}
+        <div style={{ display: 'flex', borderBottom: '1px solid rgba(99,102,241,0.12)', flexShrink: 0, background: '#0a0d18' }}>
+          {(['viewer', 'builder'] as const).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => setRightMode(mode)}
               style={{
-                fontSize: '0.78rem',
-                color: '#1f2937',
-                letterSpacing: '0.1em',
-                textTransform: 'uppercase',
+                padding: '10px 20px', background: 'transparent', border: 'none',
+                borderBottom: rightMode === mode ? '2px solid #6366f1' : '2px solid transparent',
+                color: rightMode === mode ? '#a5b4fc' : '#374151',
+                fontSize: '0.7rem', fontWeight: rightMode === mode ? 700 : 400,
+                cursor: 'pointer', fontFamily: 'inherit', letterSpacing: '0.06em',
+                textTransform: 'uppercase', transition: 'all 0.15s',
               }}
             >
-              select a skill node to read
+              {mode === 'viewer' ? '📄 skill viewer' : `⚡ prompt builder${pinnedSkills.length > 0 ? ` (${pinnedSkills.length})` : ''}`}
+            </button>
+          ))}
+        </div>
+
+        {/* Panel content */}
+        <div style={{ flex: 1, overflow: 'hidden' }}>
+          {rightMode === 'viewer' ? (
+            <div style={{ height: '100%', overflowY: 'auto', padding: '40px 48px 80px', scrollbarWidth: 'thin', scrollbarColor: 'rgba(99,102,241,0.2) transparent' }}>
+              {!selectedSkill ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 16, userSelect: 'none' }}>
+                  <div style={{ fontSize: '3rem', opacity: 0.12 }}>🧠</div>
+                  <div style={{ fontSize: '0.78rem', color: '#1f2937', letterSpacing: '0.1em', textTransform: 'uppercase' }}>select a skill node to read</div>
+                </div>
+              ) : (
+                <div style={{ maxWidth: 760 }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 20, gap: 12 }}>
+                    <div style={{ fontSize: '0.68rem', color: '#374151', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                      {selectedSkill.path?.split('/').join(' › ')}
+                    </div>
+                    <button
+                      onClick={() => selectedSkill && addToBuilder(selectedSkill)}
+                      style={{
+                        background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.25)',
+                        borderRadius: 6, color: '#a5b4fc', fontSize: '0.65rem', padding: '4px 10px',
+                        cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', flexShrink: 0,
+                      }}
+                    >
+                      ⚡ add to builder
+                    </button>
+                  </div>
+                  <h1 style={{ fontSize: '1.5rem', fontWeight: 800, color: '#f1f5f9', marginBottom: 10, letterSpacing: '0.02em' }}>{selectedSkill.name}</h1>
+                  {selectedSkill.description && (
+                    <p style={{ fontSize: '0.88rem', color: '#64748b', marginBottom: 28, lineHeight: 1.65, borderLeft: `3px solid ${CATEGORY_META[selectedSkill.category]?.color || '#6b7280'}`, paddingLeft: 14, margin: '0 0 28px' }}>
+                      {selectedSkill.description}
+                    </p>
+                  )}
+                  <div style={{ height: 1, background: 'rgba(99,102,241,0.1)', marginBottom: 28 }} />
+                  {contentLoading ? (
+                    <div style={{ color: '#374151', fontSize: '0.78rem' }}>loading content...</div>
+                  ) : selectedSkill.content ? (
+                    <div style={{ fontSize: '0.88rem', lineHeight: 1.8, color: '#94a3b8' }} dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedSkill.content) }} />
+                  ) : (
+                    <div style={{ color: '#1f2937', fontSize: '0.78rem' }}>no content available</div>
+                  )}
+                </div>
+              )}
             </div>
-          </div>
-        )}
-
-        {selectedSkill && (
-          <div style={{ maxWidth: 760 }}>
-            {/* Breadcrumb path */}
-            <div
-              style={{
-                fontSize: '0.68rem',
-                color: '#374151',
-                marginBottom: 20,
-                letterSpacing: '0.06em',
-                textTransform: 'uppercase',
-              }}
-            >
-              {selectedSkill.path?.split('/').join(' › ')}
-            </div>
-
-            {/* Title */}
-            <h1
-              style={{
-                fontSize: '1.5rem',
-                fontWeight: 800,
-                color: '#f1f5f9',
-                marginBottom: 10,
-                letterSpacing: '0.02em',
-              }}
-            >
-              {selectedSkill.name}
-            </h1>
-
-            {/* Description */}
-            {selectedSkill.description && (
-              <p
-                style={{
-                  fontSize: '0.88rem',
-                  color: '#64748b',
-                  marginBottom: 28,
-                  lineHeight: 1.65,
-                  borderLeft: `3px solid ${CATEGORY_META[selectedSkill.category]?.color || '#6b7280'}`,
-                  paddingLeft: 14,
-                  margin: '0 0 28px',
-                }}
-              >
-                {selectedSkill.description}
-              </p>
-            )}
-
-            <div style={{ height: 1, background: 'rgba(99,102,241,0.1)', marginBottom: 28 }} />
-
-            {/* Markdown content */}
-            {contentLoading ? (
-              <div style={{ color: '#374151', fontSize: '0.78rem', letterSpacing: '0.06em' }}>
-                loading content...
-              </div>
-            ) : selectedSkill.content ? (
-              <div
-                style={{ fontSize: '0.88rem', lineHeight: 1.8, color: '#94a3b8' }}
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(selectedSkill.content) }}
-              />
-            ) : (
-              <div style={{ color: '#1f2937', fontSize: '0.78rem' }}>no content available</div>
-            )}
-          </div>
-        )}
+          ) : (
+            <PromptBuilder pinnedSkills={pinnedSkills} onRemove={removeFromBuilder} onClear={() => setPinnedSkills([])} />
+          )}
+        </div>
       </div>
     </div>
   );
