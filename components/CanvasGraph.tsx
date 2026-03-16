@@ -9,6 +9,7 @@ interface Skill {
   description: string | null
   content: string
   category: string | null
+  path?: string | null
   updated_at: string
 }
 
@@ -89,15 +90,19 @@ function computeDiff(oldText: string, newText: string): DiffLine[] {
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
+  voices:   '#a855f7',
+  research: '#14b8a6',
+  formats:  '#3b82f6',
+  studio:   '#f59e0b',
+  ops:      '#6b7280',
+  // legacy fallbacks
   analytics: '#3B82F6',
   content: '#8B5CF6',
-  research: '#10B981',
   video: '#F59E0B',
   dev: '#EAB308',
-  ops: '#6B7280',
 }
 
-const CATEGORIES = Object.keys(CATEGORY_COLORS)
+const CATEGORIES = ['voices', 'research', 'formats', 'studio', 'ops']
 
 function hexToRgb(hex: string): [number, number, number] {
   const r = parseInt(hex.slice(1, 3), 16)
@@ -106,9 +111,11 @@ function hexToRgb(hex: string): [number, number, number] {
   return [r, g, b]
 }
 
-function getCategoryColor(category: string | null): string {
-  if (!category) return '#6366F1'
-  return CATEGORY_COLORS[category.toLowerCase()] ?? '#6366F1'
+function getCategoryColor(category: string | null, path?: string | null): string {
+  // Use top-level path segment if available
+  const top = path ? path.split('/')[0] : category
+  if (!top) return '#6366F1'
+  return CATEGORY_COLORS[top.toLowerCase()] ?? '#6366F1'
 }
 
 export default function CanvasGraph() {
@@ -176,65 +183,123 @@ export default function CanvasGraph() {
       category: 'center',
     })
 
-    // Determine which categories actually have skills
-    const usedCategories = CATEGORIES.filter(cat =>
-      skillList.some(s => (s.category ?? '').toLowerCase() === cat)
-    )
-    if (usedCategories.length === 0) return { nodes, edges }
+    // Build graph from path hierarchy: center → top-level → subfolder → leaf
+    // Group skills by path segments
+    type SkillGroup = { skills: Skill[]; subfolders: Map<string, Skill[]> }
+    const topGroups = new Map<string, SkillGroup>()
 
-    const catRadius = 220
-    usedCategories.forEach((cat, i) => {
-      const angle = (i / usedCategories.length) * Math.PI * 2 - Math.PI / 2
+    for (const skill of skillList) {
+      const parts = ((skill as unknown as { path?: string }).path || skill.category || 'ops').split('/').filter(Boolean)
+      const top = parts[0] || 'ops'
+      if (!topGroups.has(top)) topGroups.set(top, { skills: [], subfolders: new Map() })
+      const group = topGroups.get(top)!
+      if (parts.length === 1) {
+        group.skills.push(skill)
+      } else {
+        const sub = parts[1]
+        if (!group.subfolders.has(sub)) group.subfolders.set(sub, [])
+        group.subfolders.get(sub)!.push(skill)
+      }
+    }
+
+    const topKeys = CATEGORIES.filter(c => topGroups.has(c))
+    const extraKeys = Array.from(topGroups.keys()).filter(k => !CATEGORIES.includes(k))
+    const allTopKeys = [...topKeys, ...extraKeys]
+
+    if (allTopKeys.length === 0) return { nodes, edges }
+
+    const catRadius = 240
+    allTopKeys.forEach((top, i) => {
+      const angle = (i / allTopKeys.length) * Math.PI * 2 - Math.PI / 2
       const nx = cx + Math.cos(angle) * catRadius
       const ny = cy + Math.sin(angle) * catRadius
-      const color = CATEGORY_COLORS[cat]
+      const color = CATEGORY_COLORS[top] ?? '#6366F1'
+      const group = topGroups.get(top)!
 
+      // Top-level category node
       nodes.push({
-        id: `cat_${cat}`,
-        label: cat.toUpperCase(),
+        id: `cat_${top}`,
+        label: top.toUpperCase(),
         type: 'category',
         x: nx, y: ny,
         vx: 0, vy: 0,
         radius: 36,
         color,
-        category: cat,
+        category: top,
+      })
+      edges.push({ source: 'center', target: `cat_${top}`, color, width: 1.5 })
+
+      // Build subfolder nodes + their leaves
+      const subfolders = Array.from(group.subfolders.entries())
+      const directSkills = group.skills
+
+      // Subfolder nodes (mid-level)
+      const subRadius = 150
+      const totalSubs = subfolders.length
+      subfolders.forEach(([sub, subSkills], si) => {
+        const subSpread = Math.min((totalSubs - 1) * 0.45, Math.PI * 0.8)
+        const subAngle = totalSubs === 1
+          ? angle
+          : angle - subSpread / 2 + (si / (totalSubs - 1)) * subSpread
+        const sx = nx + Math.cos(subAngle) * subRadius
+        const sy = ny + Math.sin(subAngle) * subRadius
+        const subId = `sub_${top}_${sub}`
+
+        nodes.push({
+          id: subId,
+          label: sub,
+          type: 'category',
+          x: sx, y: sy,
+          vx: 0, vy: 0,
+          radius: 26,
+          color: color + 'cc',
+          category: top,
+        })
+        edges.push({ source: `cat_${top}`, target: subId, color, width: 1 })
+
+        // Leaf nodes under subfolder
+        const leafRadius = 100
+        subSkills.forEach((skill, li) => {
+          const leafSpread = Math.min((subSkills.length - 1) * 0.5, Math.PI * 0.7)
+          const leafAngle = subSkills.length === 1
+            ? subAngle
+            : subAngle - leafSpread / 2 + (li / (subSkills.length - 1)) * leafSpread
+          nodes.push({
+            id: `skill_${skill.id}`,
+            label: skill.name,
+            type: 'skill',
+            x: sx + Math.cos(leafAngle) * leafRadius,
+            y: sy + Math.sin(leafAngle) * leafRadius,
+            vx: 0, vy: 0,
+            radius: 18,
+            color,
+            category: top,
+            skill,
+          })
+          edges.push({ source: subId, target: `skill_${skill.id}`, color, width: 0.7 })
+        })
       })
 
-      edges.push({
-        source: 'center',
-        target: `cat_${cat}`,
-        color,
-        width: 1.5,
-      })
-
-      const catSkills = skillList.filter(s => (s.category ?? '').toLowerCase() === cat)
-      const skillRadius = 160
-      catSkills.forEach((skill, j) => {
-        const spread = Math.min((catSkills.length - 1) * 0.4, Math.PI * 0.85)
-        const baseAngle = angle
-        const skillAngle = catSkills.length === 1
-          ? baseAngle
-          : baseAngle - spread / 2 + (j / (catSkills.length - 1)) * spread
-
+      // Direct skills (no subfolder)
+      const dRadius = 130
+      directSkills.forEach((skill, di) => {
+        const dSpread = Math.min((directSkills.length - 1) * 0.45, Math.PI * 0.7)
+        const dAngle = directSkills.length === 1
+          ? angle
+          : angle - dSpread / 2 + (di / (directSkills.length - 1)) * dSpread
         nodes.push({
           id: `skill_${skill.id}`,
           label: skill.name,
           type: 'skill',
-          x: nx + Math.cos(skillAngle) * skillRadius,
-          y: ny + Math.sin(skillAngle) * skillRadius,
+          x: nx + Math.cos(dAngle) * dRadius,
+          y: ny + Math.sin(dAngle) * dRadius,
           vx: 0, vy: 0,
-          radius: 22,
+          radius: 18,
           color,
-          category: cat,
+          category: top,
           skill,
         })
-
-        edges.push({
-          source: `cat_${cat}`,
-          target: `skill_${skill.id}`,
-          color,
-          width: 1,
-        })
+        edges.push({ source: `cat_${top}`, target: `skill_${skill.id}`, color, width: 0.8 })
       })
     })
 
