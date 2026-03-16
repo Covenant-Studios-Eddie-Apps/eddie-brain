@@ -63,7 +63,7 @@ function renderMd(md: string): string {
   return h;
 }
 
-function TreeNodeRow({ node, depth, accentColor, openPaths, togglePath, selectedPath, onSelectLeaf, onPin }: {
+function TreeNodeRow({ node, depth, accentColor, openPaths, togglePath, selectedPath, onSelectLeaf, onPin, sq = '' }: {
   node: TreeNode; depth: number; accentColor: string;
   openPaths: Set<string>; togglePath: (p: string) => void;
   selectedPath: string | null; onSelectLeaf: (s: Skill) => void; onPin: (s: Skill) => void;
