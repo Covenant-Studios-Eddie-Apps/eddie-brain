@@ -67,8 +67,9 @@ function TreeNodeRow({ node, depth, accentColor, openPaths, togglePath, selected
   node: TreeNode; depth: number; accentColor: string;
   openPaths: Set<string>; togglePath: (p: string) => void;
   selectedPath: string | null; onSelectLeaf: (s: Skill) => void; onPin: (s: Skill) => void;
+  sq?: string;
 }) {
-  const isOpen = openPaths.has(node.fullPath);
+  const isOpen = !!sq || openPaths.has(node.fullPath);
   const isSelected = selectedPath === node.fullPath;
   const hasChildren = node.children.size > 0;
   const pl = 18 + depth * 15;
@@ -100,7 +101,7 @@ function TreeNodeRow({ node, depth, accentColor, openPaths, togglePath, selected
       </button>
       {isOpen && Array.from(node.children.values())
         .sort((a, b) => { const af = a.children.size > 0, bf = b.children.size > 0; if (af && !bf) return -1; if (!af && bf) return 1; return a.label.localeCompare(b.label); })
-        .map(ch => <TreeNodeRow key={ch.fullPath} node={ch} depth={depth + 1} accentColor={accentColor} openPaths={openPaths} togglePath={togglePath} selectedPath={selectedPath} onSelectLeaf={onSelectLeaf} onPin={onPin} />)}
+        .map(ch => <TreeNodeRow key={ch.fullPath} node={ch} depth={depth + 1} accentColor={accentColor} openPaths={openPaths} togglePath={togglePath} selectedPath={selectedPath} onSelectLeaf={onSelectLeaf} onPin={onPin} sq={sq} />)}
     </div>
   );
 }
@@ -225,6 +226,7 @@ export default function SkillTree() {
   const [contentLoading, setContentLoading] = useState(false);
   const [pinned, setPinned] = useState<SkillWithContent[]>([]);
   const [showBuilder, setShowBuilder] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     fetch(`${SUPABASE_URL}/rest/v1/skills?select=name,path,parent,category,description&limit=500`, {
@@ -255,6 +257,8 @@ export default function SkillTree() {
   const roots = [...CATEGORY_ORDER.filter(c => tree.has(c)).map(c => ({ key: c, node: tree.get(c)! })),
     ...Array.from(tree.entries()).filter(([k]) => !CATEGORY_ORDER.includes(k)).map(([k, n]) => ({ key: k, node: n }))];
 
+  const sq = searchQuery.toLowerCase();
+
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw', background: '#080B14', fontFamily: "'Courier New', Courier, monospace", overflow: 'hidden' }}>
 
@@ -264,6 +268,16 @@ export default function SkillTree() {
           <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#fff', letterSpacing: '0.14em', textTransform: 'uppercase', textShadow: '0 0 16px rgba(99,102,241,0.6)' }}>eddie brain</div>
           <div style={{ fontSize: '0.65rem', color: '#374151', marginTop: 2 }}>{loading ? 'loading...' : `${skills.filter(s => s.path).length} skill nodes`}</div>
         </div>
+      {/* Search */}
+      <div style={{ padding: '8px 12px', borderBottom: '1px solid rgba(99,102,241,0.08)', flexShrink: 0 }}>
+        <div style={{ position: 'relative' }}>
+          <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="search skills..."
+            style={{ width: '100%', background: '#080B14', border: '1px solid rgba(99,102,241,0.12)', borderRadius: 16, padding: '5px 28px 5px 10px', color: '#64748b', fontSize: '0.68rem', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' as const }}
+            onFocus={e => (e.currentTarget.style.borderColor = 'rgba(99,102,241,0.35)')}
+            onBlur={e => (e.currentTarget.style.borderColor = 'rgba(99,102,241,0.12)')} />
+          {searchQuery && <button onClick={() => setSearchQuery('')} style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', color: '#374151', cursor: 'pointer', fontSize: '0.75rem', padding: 0 }}>×</button>}
+        </div>
+      </div>
         <div style={{ flex: 1, paddingBottom: 80 }}>
           {loading && <div style={{ padding: '16px 18px', color: '#374151', fontSize: '0.75rem' }}>loading...</div>}
           {error && <div style={{ padding: '16px 18px', color: '#f87171', fontSize: '0.75rem' }}>{error}</div>}
@@ -282,7 +296,7 @@ export default function SkillTree() {
                 </button>
                 {isOpen && Array.from(node.children.values())
                   .sort((a, b) => { const af = a.children.size > 0, bf = b.children.size > 0; if (af && !bf) return -1; if (!af && bf) return 1; return a.label.localeCompare(b.label); })
-                  .map(ch => <TreeNodeRow key={ch.fullPath} node={ch} depth={1} accentColor={meta.color} openPaths={openPaths} togglePath={togglePath} selectedPath={selectedSkill?.path ?? null} onSelectLeaf={selectLeaf} onPin={pinSkill} />)}
+                  .map(ch => <TreeNodeRow key={ch.fullPath} node={ch} depth={1} accentColor={meta.color} openPaths={openPaths} togglePath={togglePath} selectedPath={selectedSkill?.path ?? null} onSelectLeaf={selectLeaf} onPin={pinSkill} sq={sq} />)}
               </div>
             );
           })}
