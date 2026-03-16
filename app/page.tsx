@@ -1028,17 +1028,18 @@ export default function Home() {
                   const isRewriting = rewritingChunkIndex === chunk.index
                   const isExpanded = expandedChunks.has(chunk.index)
                   const contentLines = chunk.content.trim().split('\n')
-                  const showToggle = contentLines.length > 6
+                  const showToggle = contentLines.length > 4
 
                   return (
                     <div
                       key={chunk.index}
                       className="chunk-card"
                       style={{
-                        border: `1px solid rgba(${hexToRgbStr(color)}, ${isEditing ? 0.5 : 0.15})`,
-                        borderRadius: 10,
+                        border: `1px solid rgba(${hexToRgbStr(color)}, ${isEditing ? 0.5 : 0.2})`,
+                        borderRadius: 8,
                         overflow: isEditing ? 'visible' : 'hidden',
-                        background: 'rgba(255,255,255,0.02)',
+                        background: 'rgba(255,255,255,0.03)',
+                        marginBottom: 8,
                       }}
                     >
                       {/* Card header */}
@@ -1048,13 +1049,13 @@ export default function Home() {
                         justifyContent: 'space-between',
                         padding: '8px 12px',
                         borderBottom: isEditing ? `1px solid rgba(${hexToRgbStr(color)}, 0.2)` : 'none',
-                        background: `rgba(${hexToRgbStr(color)}, 0.06)`,
                       }}>
                         <div style={{
-                          fontWeight: 700,
-                          fontSize: 12,
+                          fontWeight: 600,
+                          fontSize: 13,
                           color,
                           letterSpacing: '0.04em',
+                          fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
                         }}>
                           {chunk.heading === 'Overview' ? 'Overview' : chunk.heading.replace(/^## /, '')}
                         </div>
@@ -1184,19 +1185,32 @@ export default function Home() {
                         </div>
                       ) : (
                         <div style={{ padding: '8px 12px' }}>
-                          <pre style={{
-                            fontSize: 12,
-                            color: '#cbd5e1',
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word',
-                            fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
-                            lineHeight: 1.7,
-                            margin: 0,
-                            maxHeight: isExpanded ? 'none' : '10.2em',
-                            overflow: 'hidden',
-                          }}>
-                            {chunk.content.trim()}
-                          </pre>
+                          <div style={{ position: 'relative' }}>
+                            <pre style={{
+                              fontSize: 11,
+                              color: '#9ca3af',
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                              fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
+                              lineHeight: 1.5,
+                              margin: 0,
+                              maxHeight: isExpanded ? 'none' : 66,
+                              overflow: 'hidden',
+                            }}>
+                              {chunk.content.trim()}
+                            </pre>
+                            {!isExpanded && showToggle && (
+                              <div style={{
+                                position: 'absolute',
+                                bottom: 0,
+                                left: 0,
+                                right: 0,
+                                height: 24,
+                                background: 'linear-gradient(transparent, rgba(10,14,25,0.97))',
+                                pointerEvents: 'none',
+                              }} />
+                            )}
+                          </div>
                           {showToggle && (
                             <button
                               onClick={() => setExpandedChunks(prev => {
@@ -1207,7 +1221,7 @@ export default function Home() {
                               style={{
                                 background: 'none',
                                 border: 'none',
-                                color: `${color}bb`,
+                                color,
                                 fontSize: 11,
                                 cursor: 'pointer',
                                 padding: '4px 0 0',
