@@ -60,6 +60,33 @@ function assembleChunks(chunks: Chunk[]): string {
   ).join("\n")
 }
 
+type DiffLine = { type: 'removed' | 'added' | 'unchanged'; line: string }
+
+function computeDiff(oldText: string, newText: string): DiffLine[] {
+  const oldLines = oldText.split('\n')
+  const newLines = newText.split('\n')
+  const m = oldLines.length, n = newLines.length
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      if (oldLines[i] === newLines[j]) dp[i][j] = 1 + dp[i + 1][j + 1]
+      else dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1])
+    }
+  }
+  const result: DiffLine[] = []
+  let i = 0, j = 0
+  while (i < m || j < n) {
+    if (i < m && j < n && oldLines[i] === newLines[j]) {
+      result.push({ type: 'unchanged', line: oldLines[i] }); i++; j++
+    } else if (i < m && (j >= n || dp[i + 1][j] >= dp[i][j + 1])) {
+      result.push({ type: 'removed', line: oldLines[i] }); i++
+    } else {
+      result.push({ type: 'added', line: newLines[j] }); j++
+    }
+  }
+  return result
+}
+
 const CATEGORY_COLORS: Record<string, string> = {
   analytics: '#3B82F6',
   content: '#8B5CF6',
@@ -96,8 +123,14 @@ export default function Home() {
   const [chunks, setChunks] = useState<Chunk[]>([])
   const [editingChunkIndex, setEditingChunkIndex] = useState<number | null>(null)
   const [editingChunkContent, setEditingChunkContent] = useState('')
-  const [rewritingChunkIndex, setRewritingChunkIndex] = useState<number | null>(null)
   const [expandedChunks, setExpandedChunks] = useState<Set<number>>(new Set())
+
+  // AI Editor state
+  const [aiEditorChunkIndex, setAiEditorChunkIndex] = useState<number | null>(null)
+  const [aiEditorPrompt, setAiEditorPrompt] = useState('Improve this section')
+  const [aiEditorResult, setAiEditorResult] = useState<string | null>(null)
+  const [aiEditorLoading, setAiEditorLoading] = useState(false)
+  const [selectedText, setSelectedText] = useState('')
 
   // View mode toggle
   const [viewMode, setViewMode] = useState<'by-section' | 'by-file'>('by-section')
@@ -209,11 +242,14 @@ export default function Home() {
     setSaveStatus('idle')
     setEditingChunkIndex(null)
     setEditingChunkContent('')
-    setRewritingChunkIndex(null)
     setExpandedChunks(new Set())
     setIsFileEditing(false)
     setFileEditContent('')
     setViewMode('by-section')
+    setAiEditorChunkIndex(null)
+    setAiEditorResult(null)
+    setAiEditorLoading(false)
+    setSelectedText('')
     if (selectedSkill) {
       setChunks(parseChunks(selectedSkill.content))
     } else {
@@ -357,7 +393,7 @@ export default function Home() {
       ctx.beginPath()
       ctx.arc(node.x, node.y, r, 0, Math.PI * 2)
       const fill = ctx.createRadialGradient(node.x - r * 0.3, node.y - r * 0.3, 0, node.x, node.y, r)
-      fill.addColorStop(0, `rgba(${Math.min(255,cr+60)},${Math.min(255,cg+60)},${Math.min(255,cb+60)},${alpha})`)
+      fill.addColorStop(0, `rgba(${Math.min(255, cr + 60)},${Math.min(255, cg + 60)},${Math.min(255, cb + 60)},${alpha})`)
       fill.addColorStop(1, `rgba(${cr},${cg},${cb},${alpha})`)
       ctx.fillStyle = fill
       ctx.fill()
@@ -705,29 +741,49 @@ export default function Home() {
     }
   }
 
-  const rewriteChunk = async (chunk: Chunk) => {
+  const generateAiRewrite = async (chunk: Chunk) => {
     if (!selectedSkill) return
-    setRewritingChunkIndex(chunk.index)
-    setEditingChunkIndex(chunk.index)
-    setEditingChunkContent(chunk.content)
+    const neighboringHeadings = chunks
+      .filter(c => c.index !== chunk.index)
+      .map(c => c.heading === 'Overview' ? 'Overview' : c.heading.replace(/^## /, ''))
+    const currentContent = editingChunkIndex === chunk.index ? editingChunkContent : chunk.content
+    setAiEditorLoading(true)
+    setAiEditorResult(null)
     try {
       const res = await fetch('/api/rewrite-chunk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           heading: chunk.heading,
-          content: chunk.content,
+          content: currentContent,
           skillName: selectedSkill.name,
           category: selectedSkill.category,
+          userPrompt: aiEditorPrompt,
+          selectedText: selectedText || undefined,
+          neighboringHeadings,
         }),
       })
       const data = await res.json()
-      setEditingChunkContent(data.improved ?? chunk.content)
+      setAiEditorResult(data.improved ?? null)
     } catch {
-      // keep original content in edit mode
+      // keep null result
     } finally {
-      setRewritingChunkIndex(null)
+      setAiEditorLoading(false)
     }
+  }
+
+  const acceptAiResult = (chunk: Chunk) => {
+    if (aiEditorResult === null) return
+    const isCurrentlyEditing = editingChunkIndex === chunk.index
+    if (isCurrentlyEditing) {
+      setEditingChunkContent(aiEditorResult)
+    } else {
+      setEditingChunkIndex(chunk.index)
+      setEditingChunkContent(aiEditorResult)
+    }
+    setAiEditorChunkIndex(null)
+    setAiEditorResult(null)
+    setSelectedText('')
   }
 
   const saveFile = async (content: string) => {
@@ -782,6 +838,7 @@ export default function Home() {
         top: 0,
         right: panelVisible && selectedSkill ? 0 : -440,
         width: 420,
+        maxWidth: '100vw',
         height: '100vh',
         background: 'rgba(10,14,25,0.95)',
         borderLeft: '1px solid rgba(99,102,241,0.3)',
@@ -790,6 +847,7 @@ export default function Home() {
         transition: 'right 0.35s cubic-bezier(0.4,0,0.2,1)',
         zIndex: 100,
         backdropFilter: 'blur(12px)',
+        overflowX: 'hidden',
       }}>
         {selectedSkill && (
           <>
@@ -893,6 +951,7 @@ export default function Home() {
             <div style={{
               flex: 1,
               overflowY: 'auto',
+              overflowX: 'hidden',
               padding: '16px 20px',
               display: 'flex',
               flexDirection: 'column',
@@ -941,6 +1000,8 @@ export default function Home() {
                           padding: 10,
                           resize: 'vertical',
                           outline: 'none',
+                          whiteSpace: 'pre-wrap',
+                          wordWrap: 'break-word',
                         }}
                         onFocus={e => { e.currentTarget.style.boxShadow = `0 0 0 2px ${color}55` }}
                         onBlur={e => { e.currentTarget.style.boxShadow = 'none' }}
@@ -991,6 +1052,7 @@ export default function Home() {
                         color: '#cbd5e1',
                         whiteSpace: 'pre-wrap',
                         wordBreak: 'break-word',
+                        overflowWrap: 'break-word',
                         fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
                         lineHeight: 1.7,
                         margin: 0,
@@ -1025,8 +1087,8 @@ export default function Home() {
                 /* ── By Section mode ── */
                 chunks.map((chunk) => {
                   const isEditing = editingChunkIndex === chunk.index
-                  const isRewriting = rewritingChunkIndex === chunk.index
                   const isExpanded = expandedChunks.has(chunk.index)
+                  const isAiEditorOpen = aiEditorChunkIndex === chunk.index
                   const contentLines = chunk.content.trim().split('\n')
                   const showToggle = contentLines.length > 4
 
@@ -1035,9 +1097,10 @@ export default function Home() {
                       key={chunk.index}
                       className="chunk-card"
                       style={{
+                        width: '100%',
+                        boxSizing: 'border-box',
                         border: `1px solid rgba(${hexToRgbStr(color)}, ${isEditing ? 0.5 : 0.2})`,
                         borderRadius: 8,
-                        overflow: isEditing ? 'visible' : 'hidden',
                         background: 'rgba(255,255,255,0.03)',
                         marginBottom: 8,
                       }}
@@ -1048,7 +1111,7 @@ export default function Home() {
                         alignItems: 'center',
                         justifyContent: 'space-between',
                         padding: '8px 12px',
-                        borderBottom: isEditing ? `1px solid rgba(${hexToRgbStr(color)}, 0.2)` : 'none',
+                        borderBottom: (isEditing || isAiEditorOpen) ? `1px solid rgba(${hexToRgbStr(color)}, 0.2)` : 'none',
                       }}>
                         <div style={{
                           fontWeight: 600,
@@ -1056,33 +1119,47 @@ export default function Home() {
                           color,
                           letterSpacing: '0.04em',
                           fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          flex: 1,
+                          minWidth: 0,
                         }}>
                           {chunk.heading === 'Overview' ? 'Overview' : chunk.heading.replace(/^## /, '')}
                         </div>
-                        <div style={{ display: 'flex', gap: 4 }}>
-                          {/* Sparkle / AI rewrite button */}
+                        <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                          {/* ✨ AI editor button */}
                           <button
-                            title="AI rewrite"
-                            disabled={isRewriting || (editingChunkIndex !== null && !isEditing)}
-                            onClick={() => rewriteChunk(chunk)}
+                            title="AI editor"
+                            onClick={() => {
+                              if (isAiEditorOpen) {
+                                setAiEditorChunkIndex(null)
+                                setAiEditorResult(null)
+                              } else {
+                                setAiEditorChunkIndex(chunk.index)
+                                setAiEditorPrompt('Improve this section')
+                                setAiEditorResult(null)
+                                setSelectedText('')
+                              }
+                            }}
                             style={{
-                              background: 'transparent',
-                              border: 'none',
-                              cursor: isRewriting || (editingChunkIndex !== null && !isEditing) ? 'not-allowed' : 'pointer',
+                              background: isAiEditorOpen ? `${color}22` : 'transparent',
+                              border: isAiEditorOpen ? `1px solid ${color}44` : 'none',
+                              cursor: 'pointer',
                               padding: '2px 5px',
                               borderRadius: 6,
                               fontSize: 14,
-                              opacity: isRewriting || (editingChunkIndex !== null && !isEditing) ? 0.4 : 0.7,
+                              opacity: 0.7,
                               transition: 'opacity 0.15s',
                               display: 'flex',
                               alignItems: 'center',
                             }}
-                            onMouseEnter={e => { if (!isRewriting && (editingChunkIndex === null || isEditing)) (e.currentTarget as HTMLButtonElement).style.opacity = '1' }}
-                            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.opacity = isRewriting || (editingChunkIndex !== null && !isEditing) ? '0.4' : '0.7' }}
+                            onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.opacity = '1' }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.opacity = '0.7' }}
                           >
-                            {isRewriting ? '⏳' : '✨'}
+                            ✨
                           </button>
-                          {/* Pencil / edit button — always clickable; switches to this chunk */}
+                          {/* Pencil / edit button */}
                           {!isEditing && (
                             <button
                               title="Edit"
@@ -1112,39 +1189,281 @@ export default function Home() {
                         </div>
                       </div>
 
+                      {/* AI Editor panel — inline below header */}
+                      {isAiEditorOpen && (
+                        <div style={{
+                          padding: '10px 12px',
+                          background: '#0d1117',
+                          borderBottom: `1px solid rgba(${hexToRgbStr(color)}, 0.2)`,
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                            <span style={{ fontSize: 12, fontWeight: 600, color, display: 'flex', alignItems: 'center', gap: 5 }}>
+                              ✨ AI Editor
+                            </span>
+                            <button
+                              onClick={() => { setAiEditorChunkIndex(null); setAiEditorResult(null) }}
+                              style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}
+                            >
+                              ×
+                            </button>
+                          </div>
+
+                          {aiEditorResult === null ? (
+                            <>
+                              <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6 }}>
+                                What do you want to do?
+                              </div>
+                              <textarea
+                                value={aiEditorPrompt}
+                                onChange={e => setAiEditorPrompt(e.target.value)}
+                                rows={2}
+                                style={{
+                                  width: '100%',
+                                  boxSizing: 'border-box',
+                                  background: 'rgba(255,255,255,0.05)',
+                                  border: `1px solid rgba(${hexToRgbStr(color)}, 0.3)`,
+                                  borderRadius: 6,
+                                  color: '#e5e7eb',
+                                  fontFamily: 'inherit',
+                                  fontSize: 12,
+                                  lineHeight: 1.5,
+                                  padding: '6px 8px',
+                                  resize: 'none',
+                                  outline: 'none',
+                                  marginBottom: 8,
+                                }}
+                                onFocus={e => { e.currentTarget.style.boxShadow = `0 0 0 2px ${color}44` }}
+                                onBlur={e => { e.currentTarget.style.boxShadow = 'none' }}
+                                placeholder="e.g. make this shorter, add more detail, rewrite as bullet points…"
+                              />
+                              {selectedText && (
+                                <div style={{
+                                  fontSize: 11,
+                                  color: '#9ca3af',
+                                  marginBottom: 8,
+                                  padding: '4px 8px',
+                                  background: 'rgba(255,255,255,0.04)',
+                                  borderRadius: 4,
+                                  borderLeft: `2px solid ${color}`,
+                                  fontStyle: 'italic',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                }}>
+                                  Selection: "{selectedText.slice(0, 60)}{selectedText.length > 60 ? '…' : ''}"
+                                </div>
+                              )}
+                              <div style={{ fontSize: 11, color: '#4b5563', marginBottom: 10 }}>
+                                Context: {selectedSkill?.category} &gt; {chunk.heading === 'Overview' ? 'Overview' : chunk.heading.replace(/^## /, '')}
+                              </div>
+                              <div style={{ display: 'flex', gap: 6 }}>
+                                <button
+                                  disabled={aiEditorLoading}
+                                  onClick={() => generateAiRewrite(chunk)}
+                                  style={{
+                                    background: color,
+                                    border: 'none',
+                                    color: '#fff',
+                                    height: 28,
+                                    padding: '0 12px',
+                                    borderRadius: 6,
+                                    cursor: aiEditorLoading ? 'not-allowed' : 'pointer',
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    opacity: aiEditorLoading ? 0.7 : 1,
+                                  }}
+                                >
+                                  {aiEditorLoading ? '⏳ Generating…' : 'Generate'}
+                                </button>
+                                <button
+                                  onClick={() => { setAiEditorChunkIndex(null); setAiEditorResult(null) }}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.1)',
+                                    color: '#94a3b8',
+                                    height: 28,
+                                    padding: '0 10px',
+                                    borderRadius: 6,
+                                    cursor: 'pointer',
+                                    fontSize: 12,
+                                  }}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                            /* Diff view */
+                            <>
+                              <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 8 }}>
+                                Review changes:
+                              </div>
+                              <div style={{
+                                fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
+                                fontSize: 11,
+                                lineHeight: 1.6,
+                                borderRadius: 6,
+                                border: '1px solid rgba(255,255,255,0.08)',
+                                overflow: 'hidden',
+                                marginBottom: 10,
+                                maxHeight: 300,
+                                overflowY: 'auto',
+                              }}>
+                                {computeDiff(
+                                  editingChunkIndex === chunk.index ? editingChunkContent : chunk.content,
+                                  aiEditorResult
+                                ).map((dl, idx) => (
+                                  dl.type === 'unchanged' ? null : (
+                                    <div
+                                      key={idx}
+                                      style={{
+                                        padding: '1px 8px',
+                                        background: dl.type === 'removed' ? 'rgba(239,68,68,0.12)' : 'rgba(16,185,129,0.12)',
+                                        color: dl.type === 'removed' ? '#9ca3af' : '#e5e7eb',
+                                        textDecoration: dl.type === 'removed' ? 'line-through' : 'none',
+                                        whiteSpace: 'pre-wrap',
+                                        wordBreak: 'break-word',
+                                        overflowWrap: 'break-word',
+                                      }}
+                                    >
+                                      <span style={{ color: dl.type === 'removed' ? '#ef4444' : '#10b981', marginRight: 4, userSelect: 'none' }}>
+                                        {dl.type === 'removed' ? '−' : '+'}
+                                      </span>
+                                      {dl.line}
+                                    </div>
+                                  )
+                                ))}
+                                {/* If no changes shown, diff is identical — show new content */}
+                                {computeDiff(
+                                  editingChunkIndex === chunk.index ? editingChunkContent : chunk.content,
+                                  aiEditorResult
+                                ).every(dl => dl.type === 'unchanged') && (
+                                  <div style={{ padding: '4px 8px', color: '#6b7280', fontStyle: 'italic' }}>
+                                    No changes detected.
+                                  </div>
+                                )}
+                              </div>
+                              <div style={{ display: 'flex', gap: 6 }}>
+                                <button
+                                  onClick={() => acceptAiResult(chunk)}
+                                  style={{
+                                    background: 'rgba(16,185,129,0.2)',
+                                    border: '1px solid rgba(16,185,129,0.4)',
+                                    color: '#10b981',
+                                    height: 28,
+                                    padding: '0 12px',
+                                    borderRadius: 6,
+                                    cursor: 'pointer',
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  Accept ✓
+                                </button>
+                                <button
+                                  onClick={() => { setAiEditorResult(null) }}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.1)',
+                                    color: '#94a3b8',
+                                    height: 28,
+                                    padding: '0 10px',
+                                    borderRadius: 6,
+                                    cursor: 'pointer',
+                                    fontSize: 12,
+                                  }}
+                                >
+                                  Try again ↺
+                                </button>
+                                <button
+                                  onClick={() => { setAiEditorChunkIndex(null); setAiEditorResult(null); setSelectedText('') }}
+                                  style={{
+                                    background: 'rgba(239,68,68,0.08)',
+                                    border: '1px solid rgba(239,68,68,0.2)',
+                                    color: '#9ca3af',
+                                    height: 28,
+                                    padding: '0 10px',
+                                    borderRadius: 6,
+                                    cursor: 'pointer',
+                                    fontSize: 12,
+                                  }}
+                                >
+                                  Discard ✕
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+
                       {/* Card body */}
                       {isEditing ? (
                         <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                          <textarea
-                            ref={taRef}
-                            value={isRewriting ? '⏳ Rewriting...' : editingChunkContent}
-                            onChange={e => setEditingChunkContent(e.target.value)}
-                            disabled={isRewriting}
-                            style={{
-                              width: '100%',
-                              boxSizing: 'border-box',
-                              minHeight: 120,
-                              height: 'auto',
-                              background: '#0d1117',
-                              border: `1px solid ${color}66`,
-                              borderRadius: 6,
-                              color: '#e5e7eb',
-                              fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
-                              fontSize: 12,
-                              lineHeight: 1.7,
-                              padding: 10,
-                              resize: 'none',
-                              outline: 'none',
-                              overflow: 'hidden',
-                              transition: 'box-shadow 0.15s',
-                              opacity: isRewriting ? 0.5 : 1,
-                            }}
-                            onFocus={e => { e.currentTarget.style.boxShadow = `0 0 0 2px ${color}55` }}
-                            onBlur={e => { e.currentTarget.style.boxShadow = 'none' }}
-                          />
+                          <div style={{ position: 'relative' }}>
+                            <textarea
+                              ref={taRef}
+                              value={editingChunkContent}
+                              onChange={e => setEditingChunkContent(e.target.value)}
+                              onSelect={e => {
+                                const ta = e.currentTarget
+                                const sel = ta.value.slice(ta.selectionStart, ta.selectionEnd)
+                                setSelectedText(sel)
+                              }}
+                              style={{
+                                width: '100%',
+                                boxSizing: 'border-box',
+                                minHeight: 120,
+                                height: 'auto',
+                                background: '#0d1117',
+                                border: `1px solid ${color}66`,
+                                borderRadius: 6,
+                                color: '#e5e7eb',
+                                fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
+                                fontSize: 12,
+                                lineHeight: 1.7,
+                                padding: 10,
+                                resize: 'none',
+                                outline: 'none',
+                                overflow: 'hidden',
+                                transition: 'box-shadow 0.15s',
+                                whiteSpace: 'pre-wrap',
+                                wordWrap: 'break-word',
+                              }}
+                              onFocus={e => { e.currentTarget.style.boxShadow = `0 0 0 2px ${color}55` }}
+                              onBlur={e => { e.currentTarget.style.boxShadow = 'none' }}
+                            />
+                            {/* Rewrite selection button — appears when text is selected */}
+                            {selectedText && editingChunkIndex === chunk.index && (
+                              <button
+                                onClick={() => {
+                                  setAiEditorChunkIndex(chunk.index)
+                                  setAiEditorPrompt('Improve this selection')
+                                  setAiEditorResult(null)
+                                }}
+                                style={{
+                                  position: 'absolute',
+                                  bottom: 8,
+                                  right: 8,
+                                  background: `${color}22`,
+                                  border: `1px solid ${color}55`,
+                                  color,
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                  padding: '3px 8px',
+                                  borderRadius: 5,
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                }}
+                              >
+                                ✨ Rewrite selection
+                              </button>
+                            )}
+                          </div>
                           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                             <button
-                              disabled={isSaving || isRewriting}
+                              disabled={isSaving}
                               onClick={() => saveChunk(chunk.index, editingChunkContent)}
                               style={{
                                 background: color,
@@ -1153,17 +1472,17 @@ export default function Home() {
                                 height: 30,
                                 padding: '0 14px',
                                 borderRadius: 6,
-                                cursor: isSaving || isRewriting ? 'not-allowed' : 'pointer',
+                                cursor: isSaving ? 'not-allowed' : 'pointer',
                                 fontSize: 12,
                                 fontWeight: 600,
-                                opacity: isSaving || isRewriting ? 0.7 : 1,
+                                opacity: isSaving ? 0.7 : 1,
                                 transition: 'opacity 0.15s',
                               }}
                             >
                               {isSaving ? 'Saving…' : 'Save'}
                             </button>
                             <button
-                              onClick={() => { setEditingChunkIndex(null); setEditingChunkContent(''); setSaveStatus('idle') }}
+                              onClick={() => { setEditingChunkIndex(null); setEditingChunkContent(''); setSaveStatus('idle'); setSelectedText('') }}
                               style={{
                                 background: 'rgba(255,255,255,0.05)',
                                 border: '1px solid rgba(255,255,255,0.1)',
@@ -1191,10 +1510,11 @@ export default function Home() {
                               color: '#9ca3af',
                               whiteSpace: 'pre-wrap',
                               wordBreak: 'break-word',
+                              overflowWrap: 'break-word',
                               fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
-                              lineHeight: 1.5,
+                              lineHeight: 1.6,
                               margin: 0,
-                              maxHeight: isExpanded ? 'none' : 66,
+                              maxHeight: isExpanded ? 'none' : 72,
                               overflow: 'hidden',
                             }}>
                               {chunk.content.trim()}
