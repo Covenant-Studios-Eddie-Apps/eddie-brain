@@ -32,6 +32,34 @@ interface Edge {
   width: number
 }
 
+interface Chunk {
+  heading: string  // e.g. "## Credentials" or "Overview"
+  content: string
+  index: number
+}
+
+function parseChunks(markdown: string): Chunk[] {
+  const lines = markdown.split("\n")
+  const chunks: Chunk[] = []
+  let current: Chunk = { heading: "Overview", content: "", index: 0 }
+  for (const line of lines) {
+    if (line.startsWith("## ")) {
+      if (current.content.trim()) chunks.push(current)
+      current = { heading: line, content: "", index: chunks.length }
+    } else {
+      current.content += line + "\n"
+    }
+  }
+  if (current.content.trim()) chunks.push(current)
+  return chunks
+}
+
+function assembleChunks(chunks: Chunk[]): string {
+  return chunks.map(c =>
+    c.heading === "Overview" ? c.content : c.heading + "\n" + c.content
+  ).join("\n")
+}
+
 const CATEGORY_COLORS: Record<string, string> = {
   analytics: '#3B82F6',
   content: '#8B5CF6',
@@ -61,10 +89,15 @@ export default function Home() {
   const [loading, setLoading] = useState(true)
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null)
   const [panelVisible, setPanelVisible] = useState(false)
-  const [isEditing, setIsEditing] = useState(false)
-  const [editContent, setEditContent] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+
+  // Chunk editing state
+  const [chunks, setChunks] = useState<Chunk[]>([])
+  const [editingChunkIndex, setEditingChunkIndex] = useState<number | null>(null)
+  const [editingChunkContent, setEditingChunkContent] = useState('')
+  const [rewritingChunkIndex, setRewritingChunkIndex] = useState<number | null>(null)
+  const [expandedChunks, setExpandedChunks] = useState<Set<number>>(new Set())
 
   // Graph state in refs to avoid re-renders in animation loop
   const nodesRef = useRef<Node[]>([])
@@ -163,9 +196,18 @@ export default function Home() {
     return { nodes, edges }
   }, [])
 
+  // Reset chunk state when skill changes
   useEffect(() => {
-    setIsEditing(false)
     setSaveStatus('idle')
+    setEditingChunkIndex(null)
+    setEditingChunkContent('')
+    setRewritingChunkIndex(null)
+    setExpandedChunks(new Set())
+    if (selectedSkill) {
+      setChunks(parseChunks(selectedSkill.content))
+    } else {
+      setChunks([])
+    }
   }, [selectedSkill?.id])
 
   useEffect(() => {
@@ -605,9 +647,80 @@ export default function Home() {
     }
   }, [])
 
+  const saveChunk = async (chunkIndex: number, newContent: string) => {
+    if (!selectedSkill) return
+    const updatedChunks = chunks.map((c, i) =>
+      i === chunkIndex ? { ...c, content: newContent } : c
+    )
+    const fullContent = assembleChunks(updatedChunks)
+    const updated: Skill = { ...selectedSkill, content: fullContent, updated_at: new Date().toISOString() }
+
+    setIsSaving(true)
+    setSaveStatus('idle')
+    try {
+      const res = await fetch('/api/sync-skills', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          skills: [{
+            name: updated.name,
+            description: updated.description,
+            content: updated.content,
+            category: updated.category,
+            updated_at: updated.updated_at,
+          }]
+        }),
+      })
+      if (!res.ok) throw new Error('failed')
+      setSkills(prev => prev.map(s => s.id === selectedSkill.id ? updated : s))
+      setSelectedSkill(updated)
+      setChunks(updatedChunks)
+      setEditingChunkIndex(null)
+      setEditingChunkContent('')
+      setSaveStatus('saved')
+      setTimeout(() => setSaveStatus('idle'), 2000)
+    } catch {
+      setSaveStatus('error')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const rewriteChunk = async (chunk: Chunk) => {
+    if (!selectedSkill) return
+    setRewritingChunkIndex(chunk.index)
+    setEditingChunkIndex(chunk.index)
+    setEditingChunkContent(chunk.content)
+    try {
+      const res = await fetch('/api/rewrite-chunk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          heading: chunk.heading,
+          content: chunk.content,
+          skillName: selectedSkill.name,
+          category: selectedSkill.category,
+        }),
+      })
+      const data = await res.json()
+      setEditingChunkContent(data.improved ?? chunk.content)
+    } catch {
+      // keep original content in edit mode
+    } finally {
+      setRewritingChunkIndex(null)
+    }
+  }
+
+  const color = selectedSkill ? getCategoryColor(selectedSkill.category) : '#6366F1'
+
   return (
     <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#080B14', position: 'relative' }}>
-      <style>{`@keyframes fadeOut { 0%,60%{opacity:1} 100%{opacity:0} }`}</style>
+      <style>{`
+        @keyframes fadeOut { 0%,60%{opacity:1} 100%{opacity:0} }
+        .chunk-card { transition: border-color 0.15s; }
+        .chunk-card:hover { border-color: rgba(var(--card-rgb), 0.35) !important; }
+        textarea { scrollbar-width: thin; scrollbar-color: rgba(99,102,241,0.3) transparent; }
+      `}</style>
       <canvas ref={canvasRef} style={{ display: 'block' }} />
 
       {/* Side Panel */}
@@ -627,6 +740,7 @@ export default function Home() {
       }}>
         {selectedSkill && (
           <>
+            {/* Panel header */}
             <div style={{
               padding: '20px 24px 16px',
               borderBottom: '1px solid rgba(99,102,241,0.2)',
@@ -635,7 +749,7 @@ export default function Home() {
               justifyContent: 'space-between',
               gap: 12,
             }}>
-              <div>
+              <div style={{ flex: 1, minWidth: 0 }}>
                 {selectedSkill.category && (
                   <div style={{
                     display: 'inline-block',
@@ -645,9 +759,9 @@ export default function Home() {
                     fontWeight: 600,
                     letterSpacing: '0.08em',
                     textTransform: 'uppercase',
-                    background: `${getCategoryColor(selectedSkill.category)}22`,
-                    color: getCategoryColor(selectedSkill.category),
-                    border: `1px solid ${getCategoryColor(selectedSkill.category)}44`,
+                    background: `${color}22`,
+                    color,
+                    border: `1px solid ${color}44`,
                     marginBottom: 8,
                   }}>
                     {selectedSkill.category}
@@ -656,7 +770,7 @@ export default function Home() {
                 <div style={{
                   fontSize: 20,
                   fontWeight: 700,
-                  color: getCategoryColor(selectedSkill.category),
+                  color,
                   lineHeight: 1.2,
                 }}>
                   {selectedSkill.name}
@@ -666,34 +780,18 @@ export default function Home() {
                     {selectedSkill.description}
                   </div>
                 )}
+                <div style={{ fontSize: 11, color: 'rgba(148,163,184,0.6)', marginTop: 6 }}>
+                  {chunks.length} section{chunks.length !== 1 ? 's' : ''}
+                </div>
               </div>
               <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
-                {!isEditing && (
-                  <button
-                    onClick={() => { setEditContent(selectedSkill.content); setIsEditing(true); setSaveStatus('idle') }}
-                    style={{
-                      background: `${getCategoryColor(selectedSkill.category)}22`,
-                      border: `1px solid ${getCategoryColor(selectedSkill.category)}44`,
-                      color: getCategoryColor(selectedSkill.category),
-                      height: 32,
-                      padding: '0 12px',
-                      borderRadius: 8,
-                      cursor: 'pointer',
-                      fontSize: 12,
-                      fontWeight: 600,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 5,
-                      transition: 'all 0.15s',
-                    }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = `${getCategoryColor(selectedSkill.category)}44` }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = `${getCategoryColor(selectedSkill.category)}22` }}
-                  >
-                    ✏ Edit
-                  </button>
-                )}
                 <button
-                  onClick={() => { setIsEditing(false); setSaveStatus('idle'); setPanelVisible(false); setTimeout(() => setSelectedSkill(null), 350) }}
+                  onClick={() => {
+                    setEditingChunkIndex(null)
+                    setSaveStatus('idle')
+                    setPanelVisible(false)
+                    setTimeout(() => setSelectedSkill(null), 350)
+                  }}
                   style={{
                     background: 'rgba(255,255,255,0.05)',
                     border: '1px solid rgba(255,255,255,0.1)',
@@ -715,136 +813,248 @@ export default function Home() {
                 </button>
               </div>
             </div>
-            {isEditing ? (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '16px 24px', gap: 12 }}>
-                <textarea
-                  value={editContent}
-                  onChange={e => setEditContent(e.target.value)}
-                  style={{
-                    flex: 1,
-                    width: '100%',
-                    boxSizing: 'border-box',
-                    background: '#0d1117',
-                    border: `1px solid ${getCategoryColor(selectedSkill.category)}66`,
-                    borderRadius: 8,
-                    color: '#e5e7eb',
-                    fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
-                    fontSize: 13,
-                    lineHeight: 1.7,
-                    padding: 16,
-                    resize: 'none',
-                    outline: 'none',
-                    transition: 'box-shadow 0.15s',
-                  }}
-                  onFocus={e => { e.currentTarget.style.boxShadow = `0 0 0 2px ${getCategoryColor(selectedSkill.category)}55` }}
-                  onBlur={e => { e.currentTarget.style.boxShadow = 'none' }}
-                />
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <button
-                    disabled={isSaving}
-                    onClick={async () => {
-                      setIsSaving(true)
-                      setSaveStatus('idle')
-                      const updated: Skill = { ...selectedSkill, content: editContent, updated_at: new Date().toISOString() }
-                      try {
-                        const res = await fetch('/api/sync-skills', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ skills: [{ name: updated.name, description: updated.description, content: updated.content, category: updated.category, updated_at: updated.updated_at }] }),
-                        })
-                        if (!res.ok) throw new Error('failed')
-                        setSkills(prev => prev.map(s => s.id === selectedSkill.id ? updated : s))
-                        setSelectedSkill(updated)
-                        setIsEditing(false)
-                        setSaveStatus('saved')
-                        setTimeout(() => setSaveStatus('idle'), 2000)
-                      } catch {
-                        setSaveStatus('error')
-                      } finally {
-                        setIsSaving(false)
-                      }
-                    }}
-                    style={{
-                      background: getCategoryColor(selectedSkill.category),
-                      border: 'none',
-                      color: '#fff',
-                      height: 34,
-                      padding: '0 18px',
-                      borderRadius: 8,
-                      cursor: isSaving ? 'not-allowed' : 'pointer',
-                      fontSize: 13,
-                      fontWeight: 600,
-                      opacity: isSaving ? 0.7 : 1,
-                      transition: 'opacity 0.15s',
-                    }}
-                  >
-                    {isSaving ? 'Saving…' : 'Save'}
-                  </button>
-                  <button
-                    onClick={() => { setIsEditing(false); setSaveStatus('idle') }}
-                    style={{
-                      background: 'rgba(255,255,255,0.05)',
-                      border: '1px solid rgba(255,255,255,0.1)',
-                      color: '#94a3b8',
-                      height: 34,
-                      padding: '0 14px',
-                      borderRadius: 8,
-                      cursor: 'pointer',
-                      fontSize: 13,
-                      transition: 'all 0.15s',
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  {saveStatus === 'error' && (
-                    <span style={{ fontSize: 12, color: '#ef4444' }}>Error saving</span>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div style={{
-                flex: 1,
-                overflowY: 'auto',
-                padding: '20px 24px',
-                scrollbarWidth: 'thin',
-                scrollbarColor: 'rgba(99,102,241,0.3) transparent',
-              }}>
-                {saveStatus === 'saved' && (
-                  <div style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    background: 'rgba(16,185,129,0.15)',
-                    border: '1px solid rgba(16,185,129,0.3)',
-                    color: '#10B981',
-                    borderRadius: 20,
-                    padding: '2px 10px',
-                    fontSize: 12,
-                    fontWeight: 600,
-                    marginBottom: 12,
-                    animation: 'fadeOut 2s forwards',
-                  }}>
-                    Saved ✓
-                  </div>
-                )}
-                <pre style={{
-                  fontSize: 13,
-                  color: '#cbd5e1',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
-                  lineHeight: 1.7,
-                  margin: 0,
+
+            {/* Chunk cards */}
+            <div style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: '16px 20px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              scrollbarWidth: 'thin',
+              scrollbarColor: 'rgba(99,102,241,0.3) transparent',
+            }}>
+              {saveStatus === 'saved' && (
+                <div style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  background: 'rgba(16,185,129,0.15)',
+                  border: '1px solid rgba(16,185,129,0.3)',
+                  color: '#10B981',
+                  borderRadius: 20,
+                  padding: '2px 10px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  animation: 'fadeOut 2s forwards',
+                  alignSelf: 'flex-start',
                 }}>
-                  {selectedSkill.content}
-                </pre>
-              </div>
-            )}
+                  Saved ✓
+                </div>
+              )}
+
+              {chunks.map((chunk) => {
+                const isEditing = editingChunkIndex === chunk.index
+                const isRewriting = rewritingChunkIndex === chunk.index
+                const isExpanded = expandedChunks.has(chunk.index)
+                const contentLines = chunk.content.trim().split('\n')
+                const showToggle = contentLines.length > 8
+
+                return (
+                  <div
+                    key={chunk.index}
+                    className="chunk-card"
+                    style={{
+                      border: `1px solid rgba(${hexToRgbStr(color)}, ${isEditing ? 0.5 : 0.15})`,
+                      borderRadius: 10,
+                      overflow: 'hidden',
+                      background: 'rgba(255,255,255,0.02)',
+                    }}
+                  >
+                    {/* Card header */}
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '8px 12px',
+                      borderBottom: isEditing ? `1px solid rgba(${hexToRgbStr(color)}, 0.2)` : 'none',
+                      background: `rgba(${hexToRgbStr(color)}, 0.06)`,
+                    }}>
+                      <div style={{
+                        fontWeight: 700,
+                        fontSize: 12,
+                        color,
+                        letterSpacing: '0.04em',
+                      }}>
+                        {chunk.heading === 'Overview' ? 'Overview' : chunk.heading.replace(/^## /, '')}
+                      </div>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        {/* Sparkle / AI rewrite button */}
+                        <button
+                          title="AI rewrite"
+                          disabled={isRewriting || editingChunkIndex !== null}
+                          onClick={() => rewriteChunk(chunk)}
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            cursor: isRewriting || editingChunkIndex !== null ? 'not-allowed' : 'pointer',
+                            padding: '2px 5px',
+                            borderRadius: 6,
+                            fontSize: 14,
+                            opacity: isRewriting || editingChunkIndex !== null ? 0.4 : 0.7,
+                            transition: 'opacity 0.15s',
+                            display: 'flex',
+                            alignItems: 'center',
+                          }}
+                          onMouseEnter={e => { if (!isRewriting && editingChunkIndex === null) (e.currentTarget as HTMLButtonElement).style.opacity = '1' }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.opacity = isRewriting || editingChunkIndex !== null ? '0.4' : '0.7' }}
+                        >
+                          {isRewriting ? '⏳' : '✨'}
+                        </button>
+                        {/* Pencil / edit button */}
+                        {!isEditing && (
+                          <button
+                            title="Edit"
+                            disabled={editingChunkIndex !== null}
+                            onClick={() => {
+                              setEditingChunkIndex(chunk.index)
+                              setEditingChunkContent(chunk.content)
+                              setSaveStatus('idle')
+                            }}
+                            style={{
+                              background: 'transparent',
+                              border: 'none',
+                              cursor: editingChunkIndex !== null ? 'not-allowed' : 'pointer',
+                              padding: '2px 5px',
+                              borderRadius: 6,
+                              fontSize: 13,
+                              opacity: editingChunkIndex !== null ? 0.4 : 0.7,
+                              transition: 'opacity 0.15s',
+                              display: 'flex',
+                              alignItems: 'center',
+                            }}
+                            onMouseEnter={e => { if (editingChunkIndex === null) (e.currentTarget as HTMLButtonElement).style.opacity = '1' }}
+                            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.opacity = editingChunkIndex !== null ? '0.4' : '0.7' }}
+                          >
+                            ✏️
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Card body */}
+                    {isEditing ? (
+                      <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <textarea
+                          value={isRewriting ? '⏳ Rewriting...' : editingChunkContent}
+                          onChange={e => setEditingChunkContent(e.target.value)}
+                          disabled={isRewriting}
+                          style={{
+                            width: '100%',
+                            boxSizing: 'border-box',
+                            minHeight: 120,
+                            background: '#0d1117',
+                            border: `1px solid ${color}66`,
+                            borderRadius: 6,
+                            color: '#e5e7eb',
+                            fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
+                            fontSize: 12,
+                            lineHeight: 1.7,
+                            padding: 10,
+                            resize: 'vertical',
+                            outline: 'none',
+                            transition: 'box-shadow 0.15s',
+                            opacity: isRewriting ? 0.5 : 1,
+                          }}
+                          onFocus={e => { e.currentTarget.style.boxShadow = `0 0 0 2px ${color}55` }}
+                          onBlur={e => { e.currentTarget.style.boxShadow = 'none' }}
+                        />
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                          <button
+                            disabled={isSaving || isRewriting}
+                            onClick={() => saveChunk(chunk.index, editingChunkContent)}
+                            style={{
+                              background: color,
+                              border: 'none',
+                              color: '#fff',
+                              height: 30,
+                              padding: '0 14px',
+                              borderRadius: 6,
+                              cursor: isSaving || isRewriting ? 'not-allowed' : 'pointer',
+                              fontSize: 12,
+                              fontWeight: 600,
+                              opacity: isSaving || isRewriting ? 0.7 : 1,
+                              transition: 'opacity 0.15s',
+                            }}
+                          >
+                            {isSaving ? 'Saving…' : 'Save'}
+                          </button>
+                          <button
+                            onClick={() => { setEditingChunkIndex(null); setEditingChunkContent(''); setSaveStatus('idle') }}
+                            style={{
+                              background: 'rgba(255,255,255,0.05)',
+                              border: '1px solid rgba(255,255,255,0.1)',
+                              color: '#94a3b8',
+                              height: 30,
+                              padding: '0 12px',
+                              borderRadius: 6,
+                              cursor: 'pointer',
+                              fontSize: 12,
+                              transition: 'all 0.15s',
+                            }}
+                          >
+                            Cancel
+                          </button>
+                          {saveStatus === 'error' && (
+                            <span style={{ fontSize: 11, color: '#ef4444' }}>Error saving</span>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ padding: '8px 12px' }}>
+                        <pre style={{
+                          fontSize: 12,
+                          color: '#cbd5e1',
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                          fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", monospace',
+                          lineHeight: 1.7,
+                          margin: 0,
+                          maxHeight: isExpanded ? 'none' : '10.2em',
+                          overflow: 'hidden',
+                        }}>
+                          {chunk.content.trim()}
+                        </pre>
+                        {showToggle && (
+                          <button
+                            onClick={() => setExpandedChunks(prev => {
+                              const next = new Set(prev)
+                              next.has(chunk.index) ? next.delete(chunk.index) : next.add(chunk.index)
+                              return next
+                            })}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: `${color}bb`,
+                              fontSize: 11,
+                              cursor: 'pointer',
+                              padding: '4px 0 0',
+                              fontWeight: 600,
+                              letterSpacing: '0.03em',
+                            }}
+                          >
+                            {isExpanded ? '▲ show less' : '▼ show more'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
           </>
         )}
       </div>
     </div>
   )
+}
+
+function hexToRgbStr(hex: string): string {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return `${r},${g},${b}`
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
