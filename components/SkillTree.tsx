@@ -63,18 +63,32 @@ function renderMd(md: string): string {
   return h;
 }
 
+function nodeMatchesSq(node: TreeNode, sq: string): boolean {
+  if (!sq) return true;
+  if (node.label.toLowerCase().includes(sq)) return true;
+  if ((node.skill?.description ?? '').toLowerCase().includes(sq)) return true;
+  for (const child of node.children.values()) {
+    if (nodeMatchesSq(child, sq)) return true;
+  }
+  return false;
+}
+
 function TreeNodeRow({ node, depth, accentColor, openPaths, togglePath, selectedPath, onSelectLeaf, onPin, sq = '' }: {
   node: TreeNode; depth: number; accentColor: string;
   openPaths: Set<string>; togglePath: (p: string) => void;
   selectedPath: string | null; onSelectLeaf: (s: Skill) => void; onPin: (s: Skill) => void;
   sq?: string;
 }) {
+  // When searching, hide nodes that don't match
+  if (sq && !nodeMatchesSq(node, sq)) return null;
+
   const isOpen = !!sq || openPaths.has(node.fullPath);
   const isSelected = selectedPath === node.fullPath;
   const hasChildren = node.children.size > 0;
   const pl = 18 + depth * 15;
   const [hov, setHov] = useState(false);
 
+  // Leaf only node
   if (node.isLeaf && !hasChildren) {
     return (
       <div style={{ position: 'relative' }} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)}>
@@ -89,19 +103,39 @@ function TreeNodeRow({ node, depth, accentColor, openPaths, togglePath, selected
     );
   }
 
+  // Folder node — filter children by search
+  const visibleChildren = Array.from(node.children.values())
+    .filter(ch => !sq || nodeMatchesSq(ch, sq))
+    .sort((a, b) => { const af = a.children.size > 0, bf = b.children.size > 0; if (af && !bf) return -1; if (!af && bf) return 1; return a.label.localeCompare(b.label); });
+
+  if (sq && visibleChildren.length === 0 && !node.isLeaf) return null;
+
+  const leafCount = visibleChildren.reduce((acc, ch) => {
+    function countV(n: TreeNode): number {
+      if (n.isLeaf && !n.children.size) return 1;
+      let c = n.isLeaf ? 1 : 0;
+      for (const child of n.children.values()) c += countV(child);
+      return c;
+    }
+    return acc + countV(ch);
+  }, node.isLeaf ? 1 : 0);
+
   return (
     <div>
-      <button onClick={() => { togglePath(node.fullPath); if (node.isLeaf && node.skill) onSelectLeaf(node.skill); }} style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: `5px 14px 5px ${pl}px`, background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left' }}
+      <button onClick={() => { togglePath(node.fullPath); if (node.isLeaf && node.skill) onSelectLeaf(node.skill); }}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: `5px 14px 5px ${pl}px`, background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left' }}
         onMouseEnter={e => (e.currentTarget.style.background = 'rgba(99,102,241,0.04)')}
         onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
         <span style={{ color: '#374151', fontSize: '0.56rem', width: 10, flexShrink: 0 }}>{isOpen ? '▾' : '▸'}</span>
         <span style={{ fontSize: '0.56rem', flexShrink: 0 }}>{isOpen ? '📂' : '📁'}</span>
         <span style={{ fontSize: '0.7rem', color: isOpen ? '#94a3b8' : '#4b5563', fontWeight: 600, flex: 1 }}>{node.label}</span>
-        <span style={{ fontSize: '0.58rem', color: '#374151', background: '#111827', padding: '1px 4px', borderRadius: 8, marginRight: 2 }}>{countLeaves(node)}</span>
+        <span style={{ fontSize: '0.58rem', color: '#374151', background: '#111827', padding: '1px 4px', borderRadius: 8, marginRight: 2 }}>{leafCount}</span>
       </button>
-      {isOpen && Array.from(node.children.values())
-        .sort((a, b) => { const af = a.children.size > 0, bf = b.children.size > 0; if (af && !bf) return -1; if (!af && bf) return 1; return a.label.localeCompare(b.label); })
-        .map(ch => <TreeNodeRow key={ch.fullPath} node={ch} depth={depth + 1} accentColor={accentColor} openPaths={openPaths} togglePath={togglePath} selectedPath={selectedPath} onSelectLeaf={onSelectLeaf} onPin={onPin} sq={sq} />)}
+      {isOpen && visibleChildren.map(ch => (
+        <TreeNodeRow key={ch.fullPath} node={ch} depth={depth + 1} accentColor={accentColor}
+          openPaths={openPaths} togglePath={togglePath} selectedPath={selectedPath}
+          onSelectLeaf={onSelectLeaf} onPin={onPin} sq={sq} />
+      ))}
     </div>
   );
 }
@@ -281,7 +315,7 @@ export default function SkillTree() {
         <div style={{ flex: 1, paddingBottom: 80 }}>
           {loading && <div style={{ padding: '16px 18px', color: '#374151', fontSize: '0.75rem' }}>loading...</div>}
           {error && <div style={{ padding: '16px 18px', color: '#f87171', fontSize: '0.75rem' }}>{error}</div>}
-          {roots.map(({ key, node }) => {
+          {roots.filter(({ node }) => !sq || nodeMatchesSq(node, sq)).map(({ key, node }) => {
             const meta = CATEGORY_META[key] || { icon: '📁', color: '#6b7280', label: key };
             const isOpen = openPaths.has(key);
             return (
