@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
+import JSZip from 'jszip'
 
 interface Skill {
   id: string
@@ -131,6 +132,9 @@ export default function Home() {
   const [aiEditorResult, setAiEditorResult] = useState<string | null>(null)
   const [aiEditorLoading, setAiEditorLoading] = useState(false)
   const [selectedText, setSelectedText] = useState('')
+
+  // Backup state
+  const [backingUp, setBackingUp] = useState(false)
 
   // View mode toggle
   const [viewMode, setViewMode] = useState<'by-section' | 'by-file'>('by-section')
@@ -820,6 +824,31 @@ export default function Home() {
     }
   }
 
+  async function handleBackup() {
+    setBackingUp(true)
+    try {
+      const resp = await fetch("/api/backup")
+      const { skills } = await resp.json()
+
+      const zip = new JSZip()
+      const folder = zip.folder("eddie-skills")!
+
+      for (const skill of skills) {
+        folder.file(`${skill.name}.md`, skill.content || "")
+      }
+
+      const blob = await zip.generateAsync({ type: "blob" })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = `eddie-brain-backup-${new Date().toISOString().split("T")[0]}.zip`
+      a.click()
+      URL.revokeObjectURL(url)
+    } finally {
+      setBackingUp(false)
+    }
+  }
+
   const color = selectedSkill ? getCategoryColor(selectedSkill.category) : '#6366F1'
 
   return (
@@ -831,6 +860,29 @@ export default function Home() {
         textarea { scrollbar-width: thin; scrollbar-color: rgba(99,102,241,0.3) transparent; }
       `}</style>
       <canvas ref={canvasRef} style={{ display: 'block' }} />
+
+      {/* Backup button — top right */}
+      <div style={{ position: 'fixed', top: 12, right: 16, zIndex: 200 }}>
+        <button
+          onClick={handleBackup}
+          disabled={backingUp}
+          style={{
+            padding: '6px 12px',
+            background: 'rgba(255,255,255,0.08)',
+            border: '1px solid rgba(255,255,255,0.15)',
+            borderRadius: 6,
+            color: '#fff',
+            fontSize: 12,
+            cursor: backingUp ? 'wait' : 'pointer',
+            opacity: backingUp ? 0.6 : 1,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          {backingUp ? '⏳ Backing up...' : '⬇ Backup'}
+        </button>
+      </div>
 
       {/* Side Panel */}
       <div style={{
