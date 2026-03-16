@@ -23,7 +23,7 @@ ${selectedText
 }`
 
   const body = {
-    model: "claude-opus-4-5",
+    model: "claude-sonnet-4-5",
     max_tokens: 2048,
     messages: [{ role: "user", content: prompt }]
   }
